@@ -378,15 +378,14 @@ async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名:
 
         await db.commit()
 
-    # -------------------- 指令：/npc查看 --------------------
+# -------------------- 指令：/npc查看 --------------------
 @bot.tree.command(name="npc查看", description="查看指定官方 NPC 的詳細檔案與全體玩家的好感度排行榜")
 @app_commands.describe(npc名稱="請輸入欲查詢的官方 NPC 姓名")
-@app_commands.autocomplete(npc名稱=npc_autocomplete)
 async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
     async with aiosqlite.connect(DB_PATH) as db:
         # 1. 查詢 NPC 基本檔案資料
         async with db.execute(
-            "SELECT npc_name, image_url, age, gender, identity FROM npcs WHERE npc_name = ?", 
+            "SELECT name, image_url, age, gender, role FROM npcs WHERE name = ?", 
             (npc名稱,)
         ) as cur:
             npc_info = await cur.fetchone()
@@ -395,11 +394,11 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
             await interaction.response.send_message(f"❌ 查無名為 `{npc名稱}` 的官方 NPC！", ephemeral=True)
             return
 
-        name, img_url, age, gender, identity = npc_info
+        name, img_url, age, gender, role = npc_info
 
-        # 2. 查詢各玩家對該 NPC 的好感度總帳 (由高到低排序前 10 名)
+        # 2. 查詢各玩家角色對該 NPC 的好感度總帳 (由高到低排序前 10 名)
         async with db.execute(
-            "SELECT user_id, favorability FROM npc_favorability WHERE npc_name = ? AND favorability > 0 ORDER BY favorability DESC LIMIT 10",
+            "SELECT char_name, affection FROM npc_affection WHERE npc_name = ? AND affection > 0 ORDER BY affection DESC LIMIT 10",
             (npc名稱,)
         ) as cur:
             favor_records = await cur.fetchall()
@@ -409,29 +408,27 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
         title=f"🎭 官方 NPC 檔案：{name}", 
         color=0xE91E63
     )
-    embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{identity}", inline=False)
+    embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{role}", inline=False)
     
     if img_url:
         embed.set_thumbnail(url=img_url)
 
     # 4. 格式化好感度排行榜清單
     if not favor_records:
-        favor_desc = "目前尚無任何藝人與該 NPC 建立好感度羈絆。"
+        favor_desc = "目前尚無任何角色與該 NPC 建立好感度羈絆。"
     else:
         rank_emojis = ["🥇", "🥈", "🥉"]
         ranking_lines = []
-        for index, (uid, favor) in enumerate(favor_records):
+        for index, (cname, favor) in enumerate(favor_records):
             rank_tag = rank_emojis[index] if index < 3 else f"`#{index + 1}`"
-            ranking_lines.append(f"{rank_tag} <@{uid}> ｜ 💖 **{favor:,}** 點")
+            ranking_lines.append(f"{rank_tag} **{cname}** ｜ 💖 **{favor:,}** 點")
         favor_desc = "\n".join(ranking_lines)
 
-    embed.add_field(name="🏆 藝人好感度排行榜 (TOP 10)", value=favor_desc, inline=False)
-    embed.set_footer(text="可透過 /贈予 向 NPC 贈送特定道具提升好感度。")
+    embed.add_field(name="🏆 角色好感度排行榜 (TOP 10)", value=favor_desc, inline=False)
+    embed.set_footer(text="可透過 /贈予_選擇自己的角色 向 NPC 贈送道具提升好感度。")
 
     await interaction.response.send_message(embed=embed)
 
-
-    await interaction.response.send_message(f"🎁 **{角色名}** 贈送了 **{物品名}** ×{數量} 給 **{對象名}**！{extra_msg}")
 
 @bot.tree.command(name="售物", description="將擁有物品放上［二手］商城販售")
 async def sell_item(interaction: discord.Interaction, 角色名: str, 物品名: str, 價格: int):
