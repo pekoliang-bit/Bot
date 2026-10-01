@@ -661,6 +661,14 @@ async def on_ready():
     except Exception as e:
         print(f"❌ 指令同步失敗: {e}")
     print(f"機器人已上線：{bot.user}")
+# 只有管理員可以輸入 !sync 手動強制同步
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sync(ctx):
+    # 強制將當前指令同步到此伺服器
+    bot.tree.copy_global_to(guild=ctx.guild)
+    synced = await bot.tree.sync(guild=ctx.guild)
+    await ctx.send(f"✅ 強制同步完成！已成功為本伺服器載入 {len(synced)} 個斜線指令。")
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
