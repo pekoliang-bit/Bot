@@ -379,25 +379,47 @@ async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名:
         await db.commit()
 
 # -------------------- 指令：/npc查看 --------------------
-@bot.tree.command(name="npc查看", description="查看指定官方 NPC 的詳細檔案與全體玩家的好感度排行榜")
-@app_commands.describe(npc名稱="請輸入欲查詢的官方 NPC 姓名")
-async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
+# 1. 下拉選單元件：點選直接查看該 NPC 詳細檔案與好感排行
+class NPCSelectDropdown(discord.ui.Select):
+    def __init__(self, npcs):
+        options = [
+            discord.SelectOption(
+                label=npc[0], 
+                description=f"{npc[2]}歲 ｜ {npc[3]} ｜ {npc[4][:20]}", 
+                emoji="👤"
+            ) for npc in npcs[:25]
+        ]
+        super().__init__(placeholder="點此選擇欲查看檔案的官方 NPC...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        chosen_npc = self.values[0]
+        await render_npc_profile(interaction, chosen_npc)
+
+class NPCSelectView(discord.ui.View):
+    def __init__(self, npcs):
+        super().__init__(timeout=180)
+        self.add_item(NPCSelectDropdown(npcs))
+
+# 2. 顯示 NPC 檔案與好感榜核心函式
+async def render_npc_profile(interaction: discord.Interaction, npc_name: str):
     async with aiosqlite.connect(DB_PATH) as db:
+        # 查詢 NPC 基礎檔案
         async with db.execute(
-            "SELECT name, avatar_url, age, gender, identity FROM npcs WHERE name = ?", 
-            (npc名稱,)
+            "SELECT name, age, gender, identity, avatar_url FROM npcs WHERE name = ?", 
+            (npc_name,)
         ) as cur:
             npc_info = await cur.fetchone()
 
         if not npc_info:
-            await interaction.response.send_message(f"❌ 查無名為 `{npc名稱}` 的官方 NPC！", ephemeral=True)
+            await interaction.response.send_message(f"❌ 查無名為 `{npc_name}` 的官方 NPC！請確認管理員是否已登記。", ephemeral=True)
             return
 
-        name, img_url, age, gender, identity = npc_info
+        name, age, gender, identity, avatar_url = npc_info
 
+        # 查詢角色好感度排行 (TOP 10)
         async with db.execute(
             "SELECT char_name, affection FROM npc_affection WHERE npc_name = ? AND affection > 0 ORDER BY affection DESC LIMIT 10",
-            (npc名稱,)
+            (npc_name,)
         ) as cur:
             favor_records = await cur.fetchall()
 
@@ -407,11 +429,11 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
     )
     embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{identity}", inline=False)
     
-    if img_url:
-        embed.set_thumbnail(url=img_url)
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
 
     if not favor_records:
-        favor_desc = "目前尚無任何角色與該 NPC 建立好感度羈絆。"
+        favor_desc = "目前尚無任何藝人角色與該 NPC 建立好感度羈絆。"
     else:
         rank_emojis = ["🥇", "🥈", "🥉"]
         ranking_lines = []
@@ -421,7 +443,47 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
         favor_desc = "\n".join(ranking_lines)
 
     embed.add_field(name="🏆 角色好感度排行榜 (TOP 10)", value=favor_desc, inline=False)
-    await interaction.response.send_message(embed=embed)
+    embed.set_footer(text="可透過 /贈予_選擇自己的角色 向 NPC 贈送專屬禮物提升好感度。")
+
+    # 如果是從下拉選單觸發用 edit_message，直接指令用 send_message
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# 3. /npc查看 Slash 指令實作
+@bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 列表名冊或指定 NPC 詳細檔案")
+@app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟全 NPC 選單")
+async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name, age, gender, identity, avatar_url FROM npcs") as cur:
+            all_npcs = await cur.fetchall()
+
+    # 如果尚未登記任何 NPC
+    if not all_npcs:
+        await interaction.response.send_message("📋 目前伺服器尚未登記任何官方 NPC！請管理員先使用 `/npc登記` 建立檔案。", ephemeral=True)
+        return
+
+    # 情況 A：玩家有指定 NPC 名稱，直接查看該 NPC
+    if npc名稱:
+        await render_npc_profile(interaction, npc名稱.strip())
+        return
+
+    # 情況 B：玩家留空沒填，顯示名冊大廳與下拉選單
+    embed = discord.Embed(
+        title="👥 流光城官方 NPC 名錄大廳",
+        description="以下為目前城內已登記的所有 NPC 角色，請點選下方選單查看個人檔案與好感度榜：",
+        color=0x9B59B6
+    )
+    for npc in all_npcs:
+        embed.add_field(
+            name=f"👤 {npc[0]} ({npc[2]}歲 / {npc[3]})",
+            value=f"身分：{npc[4]}",
+            inline=True
+        )
+
+    await interaction.response.send_message(embed=embed, view=NPCSelectView(all_npcs), ephemeral=True)
+
 
 
 
