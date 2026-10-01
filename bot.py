@@ -646,29 +646,25 @@ async def view_profile(interaction: discord.Interaction, 角色名: str):
     await interaction.response.send_message(embed=embed)
 
 # -------------------- 啟動與同步 --------------------
-# 把你剛才複製的伺服器 ID 填進這裡（純數字）
-GUILD_ID = 1544051203493601380
+# 填入你剛才複製的 Discord 伺服器 ID（純數字）
+MY_GUILD_ID = 1544051203493601380  # 👈 這裡換成你的伺服器 ID
 
 @bot.event
 async def on_ready():
     await init_db()
-    guild = discord.Object(id=GUILD_ID)
+    guild = discord.Object(id=MY_GUILD_ID)
     try:
-        # 將所有指令直接複製並同步到你的專屬伺服器（無需等待 1 小時）
+        # 強制將代碼裡的所有指令直接複製並同步到你的伺服器
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
-        print(f"✅ 成功為伺服器 [{GUILD_ID}] 同步了 {len(synced)} 個指令！")
+        print(f"====================================")
+        print(f"🎉 成功同步了 {len(synced)} 個指令至伺服器 [{MY_GUILD_ID}]！")
+        for cmd in synced:
+            print(f"📌 已載入指令: /{cmd.name}")
+        print(f"====================================")
     except Exception as e:
-        print(f"❌ 指令同步失敗: {e}")
+        print(f"❌ 同步失敗: {e}")
     print(f"機器人已上線：{bot.user}")
-# 只有管理員可以輸入 !sync 手動強制同步
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def sync(ctx):
-    # 強制將當前指令同步到此伺服器
-    bot.tree.copy_global_to(guild=ctx.guild)
-    synced = await bot.tree.sync(guild=ctx.guild)
-    await ctx.send(f"✅ 強制同步完成！已成功為本伺服器載入 {len(synced)} 個斜線指令。")
 
 
 TOKEN = os.getenv("DISCORD_TOKEN")
