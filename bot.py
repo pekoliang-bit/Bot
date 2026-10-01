@@ -640,27 +640,28 @@ async def view_profile(interaction: discord.Interaction, 角色名: str):
 
     await interaction.response.send_message(embed=embed)
 
-# -------------------- 啟動與同步 --------------------
-# 填入你剛才複製的 Discord 伺服器 ID（純數字）
-MY_GUILD_ID = 1544051203493601380  # 👈 這裡換成你的伺服器 ID
+# -------------------- 清理伺服器專屬重複指令 --------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def clean_guild(ctx):
+    # 清除本伺服器的專屬副本，只保留全域單一指令
+    bot.tree.clear_commands(guild=ctx.guild)
+    await bot.tree.sync(guild=ctx.guild)
+    await ctx.send("🧹 重複指令已清空！現在只保留單一全域指令。")
 
+# -------------------- 啟動與同步 --------------------
 @bot.event
 async def on_ready():
     await init_db()
-    guild = discord.Object(id=MY_GUILD_ID)
+    if not daily_bank_interest.is_running():
+        daily_bank_interest.start()
     try:
-        # 強制將代碼裡的所有指令直接複製並同步到你的伺服器
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"====================================")
-        print(f"🎉 成功同步了 {len(synced)} 個指令至伺服器 [{MY_GUILD_ID}]！")
-        for cmd in synced:
-            print(f"📌 已載入指令: /{cmd.name}")
-        print(f"====================================")
+        # 只做全域同步，不要再 copy_global_to
+        synced = await bot.tree.sync()
+        print(f"✅ 成功全域同步 {len(synced)} 個 Slash 指令！")
     except Exception as e:
-        print(f"❌ 同步失敗: {e}")
+        print(f"同步指令錯誤: {e}")
     print(f"機器人已上線：{bot.user}")
-
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
