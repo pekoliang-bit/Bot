@@ -1,9 +1,20 @@
 import os
+import sys
+import subprocess
+
+# 檢查若缺少 aiosqlite 或 flask 則自動在背景安裝
+try:
+    import aiosqlite
+    import flask
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "aiosqlite", "flask", "discord.py"])
+    import aiosqlite
+    import flask
+
 import json
 import time
 import threading
 from datetime import datetime
-import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
