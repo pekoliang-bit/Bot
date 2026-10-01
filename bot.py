@@ -647,7 +647,7 @@ async def view_profile(interaction: discord.Interaction, 角色名: str):
 
 # -------------------- 啟動與同步 --------------------
 # 把你剛才複製的伺服器 ID 填進這裡（純數字）
-GUILD_ID = 1544051203493601380  # 
+GUILD_ID = 1544051203493601380
 
 @bot.event
 async def on_ready():
