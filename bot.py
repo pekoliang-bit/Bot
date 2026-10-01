@@ -383,9 +383,8 @@ async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名:
 @app_commands.describe(npc名稱="請輸入欲查詢的官方 NPC 姓名")
 async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        # 1. 查詢 NPC 基本檔案資料
         async with db.execute(
-            "SELECT name, image_url, age, gender, role FROM npcs WHERE name = ?", 
+            "SELECT name, avatar_url, age, gender, identity FROM npcs WHERE name = ?", 
             (npc名稱,)
         ) as cur:
             npc_info = await cur.fetchone()
@@ -394,26 +393,23 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
             await interaction.response.send_message(f"❌ 查無名為 `{npc名稱}` 的官方 NPC！", ephemeral=True)
             return
 
-        name, img_url, age, gender, role = npc_info
+        name, img_url, age, gender, identity = npc_info
 
-        # 2. 查詢各玩家角色對該 NPC 的好感度總帳 (由高到低排序前 10 名)
         async with db.execute(
             "SELECT char_name, affection FROM npc_affection WHERE npc_name = ? AND affection > 0 ORDER BY affection DESC LIMIT 10",
             (npc名稱,)
         ) as cur:
             favor_records = await cur.fetchall()
 
-    # 3. 建立展示面板 (Embed)
     embed = discord.Embed(
         title=f"🎭 官方 NPC 檔案：{name}", 
         color=0xE91E63
     )
-    embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{role}", inline=False)
+    embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{identity}", inline=False)
     
     if img_url:
         embed.set_thumbnail(url=img_url)
 
-    # 4. 格式化好感度排行榜清單
     if not favor_records:
         favor_desc = "目前尚無任何角色與該 NPC 建立好感度羈絆。"
     else:
@@ -425,9 +421,8 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str):
         favor_desc = "\n".join(ranking_lines)
 
     embed.add_field(name="🏆 角色好感度排行榜 (TOP 10)", value=favor_desc, inline=False)
-    embed.set_footer(text="可透過 /贈予_選擇自己的角色 向 NPC 贈送道具提升好感度。")
-
     await interaction.response.send_message(embed=embed)
+
 
 
 @bot.tree.command(name="售物", description="將擁有物品放上［二手］商城販售")
