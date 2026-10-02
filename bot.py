@@ -763,15 +763,22 @@ async def clean_guild(ctx):
 @bot.event
 async def on_ready():
     await init_db()
-    if not daily_bank_interest.is_running():
-        daily_bank_interest.start()
+    
+    # 修正定時任務名稱（原定義為 daily_interest）
+    if 'daily_interest' in globals() and not daily_interest.is_running():
+        daily_interest.start()
+        
     try:
         synced = await bot.tree.sync()
-        print(f"✅ 成功全域同步 {len(synced)} 個 Slash 指令！")
+        print(f"====================================")
+        print(f"🎉 成功同步了 {len(synced)} 個 Slash 指令！")
+        for cmd in synced:
+            print(f"📌 指令: /{cmd.name}")
+        print(f"====================================")
     except Exception as e:
-        print(f"❌ 同步失敗: {e}")
+        print(f"❌ 同步指令失敗: {e}")
+        
     print(f"流光城管理系統已上線：{bot.user}")
-
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
