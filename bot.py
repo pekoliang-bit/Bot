@@ -708,7 +708,7 @@ async def view_profile(interaction: discord.Interaction, 角色名: str):
 @app_commands.describe(
     成員="選擇欲發放薪水的伺服器成員",
     角色名="該成員持有的角色名稱",
-    金額="發放的薪水金額 (純數字)"
+    金額="發放的薪水金額 (純整數)"
 )
 async def salary_cmd(
     interaction: discord.Interaction,
@@ -717,7 +717,7 @@ async def salary_cmd(
     金額: int
 ):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ 權限不足：僅有管理員可使用此指令！", ephemeral=True)
+        await interaction.response.send_message("❌ 權限不足：僅有伺服器管理員可執行此操作！", ephemeral=True)
         return
 
     if 金額 <= 0:
@@ -734,19 +734,19 @@ async def salary_cmd(
 
         if not char_row:
             await interaction.response.send_message(
-                f"❌ 查無記錄：{成員.mention} 似乎並未持有名為 `{角色名}` 的角色！請確認角色名字是否正確。",
+                f"❌ 查無記錄：{成員.mention} 似乎並未持有名為 `{角色名}` 的角色！",
                 ephemeral=True
             )
             return
 
-        # 直接將金錢加入現金 (cash)
+        # 直接匯入現金 (cash)
         await db.execute(
             "UPDATE characters SET cash = cash + ? WHERE name = ?",
             (金額, 角色名.strip())
         )
         await db.commit()
 
-    # 公開送出發薪成功訊息
+    # 公開回覆
     await interaction.response.send_message(f"{成員.mention} 薪水 $ {金額:,}已入帳［{角色名}］")
 
 
