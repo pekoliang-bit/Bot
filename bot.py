@@ -702,6 +702,66 @@ async def view_profile(interaction: discord.Interaction, 角色名: str):
 
     await interaction.response.send_message(embed=embed)
 
+# -------------------- 指令：/薪水 (管理員專用) --------------------
+
+# 動態抓取指定成員的角色名單（輸入時自動補全）
+async def member_characters_autocomplete(interaction: discord.Interaction, current: str):
+    target_member = interaction.namespace.成員
+    if not target_member:
+        return []
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT name FROM characters WHERE user_id = ? AND name LIKE ? LIMIT 10",
+            (target_member.id, f"%{current}%")
+        ) as cur:
+            rows = await cur.fetchall()
+            return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
+
+@bot.tree.command(name="薪水", description="【管理員專用】發放薪水直接匯入指定角色的手頭現金")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    成員="選擇欲發放薪水的伺服器成員",
+    角色名="該成員持有的角色名稱",
+    金額="發放的薪水金額 (流光幣/現金)"
+)
+@app_commands.autocomplete(角色名=member_characters_autocomplete)
+async def salary_cmd(
+    interaction: discord.Interaction,
+    成員: discord.Member,
+    角色名: str,
+    金額: app_commands.Range[int, 1]
+):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 權限不足：僅有伺服器管理員可執行此操作！", ephemeral=True)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 驗證該角色是否確實屬於該成員
+        async with db.execute(
+            "SELECT name FROM characters WHERE user_id = ? AND name = ?",
+            (成員.id, 角色名)
+        ) as cur:
+            char_row = await cur.fetchone()
+
+        if not char_row:
+            await interaction.response.send_message(
+                f"❌ 查無記錄：{成員.mention} 似乎並未持有名為 `{角色名}` 的角色！請確認名稱是否正確。",
+                ephemeral=True
+            )
+            return
+
+        # 2. 直接為該角色的現金 (cash) 增加金額
+        await db.execute(
+            "UPDATE characters SET cash = cash + ? WHERE name = ?",
+            (金額, 角色名)
+        )
+        await db.commit()
+
+    # 3. 發送公開到帳通知
+    await interaction.response.send_message(f"{成員.mention} 薪水 $ {金額:,}已入帳［{角色名}］")
+
+
 # -------------------- 清理伺服器專屬重複指令 --------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
