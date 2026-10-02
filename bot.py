@@ -766,12 +766,12 @@ async def on_ready():
     if not daily_bank_interest.is_running():
         daily_bank_interest.start()
     try:
-        # 只做全域同步，不要再 copy_global_to
         synced = await bot.tree.sync()
         print(f"✅ 成功全域同步 {len(synced)} 個 Slash 指令！")
     except Exception as e:
-        print(f"同步指令錯誤: {e}")
-    print(f"機器人已上線：{bot.user}")
+        print(f"❌ 同步失敗: {e}")
+    print(f"流光城管理系統已上線：{bot.user}")
+
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
