@@ -106,6 +106,30 @@ async def init_db():
         await db.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('last_rate_update', '0')")
         await db.commit()
 
+        # 任務總表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT,       -- 新手任務 / 一般任務 / 限時任務 / 特殊任務
+                title TEXT UNIQUE,   -- 任務名
+                reward_desc TEXT,    -- 獎勵文字說明 (例: 5000金錢, 容貌+10)
+                reward_cash INTEGER DEFAULT 0, -- 獎勵金額 (入銀行)
+                reward_items TEXT DEFAULT '[]', -- 獎勵物品清單 JSON (例: [{"name": "鑽石胸針", "amount": 1}])
+                reward_stats TEXT DEFAULT '',   -- 數值增加字串說明 (例: "容貌+10")
+                time_limit TEXT DEFAULT ''     -- 限時範圍 (年月日時間點～年月日時間點)
+            )
+        """)
+        # 角色任務完成記錄表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quest_completions (
+                char_name TEXT,
+                quest_title TEXT,
+                completed_at REAL,
+                PRIMARY KEY (char_name, quest_title)
+            )
+        """)
+
+
 # -------------------- 定時任務 --------------------
 @tasks.loop(hours=24)
 async def daily_interest():
@@ -749,6 +773,251 @@ async def salary_cmd(
     # 公開回覆
     await interaction.response.send_message(f"{成員.mention} 薪水 $ {金額:,}已入帳［{角色名}］")
 
+import re
+from datetime import datetime
+
+REPORT_THREAD_ID = 1557017138806521947  # 指定回報區討論串/帖子 ID
+
+# -------------------- 指令 1：/任務 --------------------
+@bot.tree.command(name="任務", description="查看角色當前完成與未完成的各類任務")
+@app_commands.describe(角色名="欲查詢任務的角色名稱")
+async def view_quests(interaction: discord.Interaction, 角色名: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 驗證角色是否存在
+        async with db.execute("SELECT name FROM characters WHERE name = ?", (角色名,)) as cur:
+            if not await cur.fetchone():
+                await interaction.response.send_message(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
+                return
+
+        # 抓取所有任務
+        async with db.execute("SELECT category, title, reward_desc, time_limit FROM quests ORDER BY id ASC") as cur:
+            all_quests = await cur.fetchall()
+
+        # 抓取該角色已完成的任務
+        async with db.execute("SELECT quest_title FROM quest_completions WHERE char_name = ?", (角色名,)) as cur:
+            done_titles = {row[0] for row in await cur.fetchall()}
+
+    if not all_quests:
+        await interaction.response.send_message("📋 目前全城尚未發布任何任務！", ephemeral=True)
+        return
+
+    categories = ["新手任務", "一般任務", "限時任務", "特殊任務"]
+    embed = discord.Embed(
+        title=f"📜【{角色名}】的任務清單",
+        description="任務完成後將在後方標記 ✅，請至回報區提交連結回報！",
+        color=0xF1C40F
+    )
+
+    for cat in categories:
+        cat_quests = [q for q in all_quests if q[0] == cat]
+        if not cat_quests:
+            embed.add_field(name=f"📌 {cat}欄", value="暫無任務", inline=False)
+            continue
+
+        lines = []
+        for _, title, reward_desc, time_limit in cat_quests:
+            status = "✅" if title in done_titles else "❌"
+            limit_str = f" ⏳ `{time_limit}`" if time_limit else ""
+            lines.append(f"• **{title}**{limit_str}\n  └ 獎勵：{reward_desc} ［{status}］")
+        
+        embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# -------------------- 指令 2：/回報任務 --------------------
+@bot.tree.command(name="回報任務", description="回報已完成的任務文章連結，領取對應獎勵")
+@app_commands.describe(
+    角色名="回報任務的角色名稱",
+    文章連結="你所發表文章的帖子/討論串或訊息連結"
+)
+async def report_quest(interaction: discord.Interaction, 角色名: str, 文章連結: str):
+    # 限制必須在指定的帖子內執行回報
+    if interaction.channel_id != REPORT_THREAD_ID:
+        await interaction.response.send_message(
+            f"❌ 請至指定的回報帖子進行回報！\n👉 回報區：https://discord.com/channels/1544051203493601380/{REPORT_THREAD_ID}",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    # 驗證角色所有權
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM characters WHERE name = ?", (角色名,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                await interaction.followup.send(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
+                return
+            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send("❌ 你只能為自己持有的角色回報任務！", ephemeral=True)
+                return
+
+    # 解析文章連結中的 Channel/Thread ID 與 Message ID
+    # 格式: https://discord.com/channels/{guild_id}/{channel_id}/{message_id} 或 /{thread_id}
+    link_pattern = r"channels/\d+/(\d+)(?:/(\d+))?"
+    match = re.search(link_pattern, 文章連結)
+    if not match:
+        await interaction.followup.send("❌ 無法識別文章連結格式，請確認是否為正確的 Discord 連結！", ephemeral=True)
+        return
+
+    target_channel_id = int(match.group(1))
+    target_msg_id = int(match.group(2)) if match.group(2) else None
+
+    # 抓取目標文章以獲取標題或內容
+    target_title = ""
+    try:
+        channel_or_thread = interaction.client.get_channel(target_channel_id) or await interaction.client.fetch_channel(target_channel_id)
+        if isinstance(channel_or_thread, discord.Thread):
+            target_title = channel_or_thread.name
+        elif target_msg_id:
+            msg = await channel_or_thread.fetch_message(target_msg_id)
+            target_title = msg.content
+    except Exception:
+        pass
+
+    # 比對資料庫任務
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT title, reward_desc, reward_cash, reward_items, reward_stats, time_limit FROM quests") as cur:
+            all_quests = await cur.fetchall()
+
+        matched_quest = None
+        for q in all_quests:
+            q_title = q[0]
+            # 判斷文章討論串標題或訊息開頭是否包含任務名
+            if q_title in target_title:
+                matched_quest = q
+                break
+
+        if not matched_quest:
+            await interaction.followup.send(
+                f"❌ 驗證失敗：無法在提供的文章（標題/內容：`{target_title[:30]}`）中匹配到正確的任務名稱！請確認文章標題是否包含完整任務名。",
+                ephemeral=True
+            )
+            return
+
+        q_title, r_desc, r_cash, r_items_json, r_stats, time_limit = matched_quest
+
+        # 檢查限時任務是否逾期
+        if time_limit and "～" in time_limit:
+            try:
+                end_str = time_limit.split("～")[1].strip()
+                end_time = datetime.strptime(end_str, "%Y/%m/%d %H:%M")
+                if datetime.now() > end_time:
+                    await interaction.followup.send(f"❌ 該任務已於 `{end_str}` 截止，無法再回報！", ephemeral=True)
+                    return
+            except Exception:
+                pass
+
+        # 檢查是否已完成過
+        async with db.execute("SELECT 1 FROM quest_completions WHERE char_name = ? AND quest_title = ?", (角色名, q_title)) as cur:
+            if await cur.fetchone():
+                await interaction.followup.send(f"⚠️ 角色 **{角色名}** 已經完成過任務【{q_title}】，不可重複回報領獎！", ephemeral=True)
+                return
+
+        # 發放金錢入銀行
+        if r_cash > 0:
+            await db.execute("UPDATE characters SET bank = bank + ? WHERE name = ?", (r_cash, 角色名))
+
+        # 發放道具入背包
+        items = json.loads(r_items_json) if r_items_json else []
+        for it in items:
+            it_name = it.get("name")
+            it_amt = it.get("amount", 1)
+            async with db.execute("SELECT id FROM inventory WHERE owner_name = ? AND item_name = ? AND giver = '任務獎勵'", (角色名, it_name)) as cur:
+                inv_row = await cur.fetchone()
+                if inv_row:
+                    await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (it_amt, inv_row[0]))
+                else:
+                    await db.execute("INSERT INTO inventory (owner_name, item_name, amount, giver) VALUES (?, ?, ?, '任務獎勵')", (角色名, it_name, it_amt))
+
+        # 標記完成
+        await db.execute("INSERT INTO quest_completions (char_name, quest_title, completed_at) VALUES (?, ?, ?)", (角色名, q_title, time.time()))
+        await db.commit()
+
+    # 回傳指定格式
+    stat_text = f"、+ 數值{r_stats}" if r_stats else ""
+    await interaction.followup.send(
+        f"‼️任務確認完成\n獎勵：$ {r_cash:,}{stat_text}\n恭喜 {interaction.user.mention} 的【{角色名}】完成任務《{q_title}》！✅"
+    )
+
+
+# -------------------- 指令 3：/任務新增 (管理員專用) --------------------
+@bot.tree.command(name="任務新增", description="【管理員專用】發布全新任務並設定獎勵")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(選擇欄位=[
+    app_commands.Choice(name="新手任務", value="新手任務"),
+    app_commands.Choice(name="一般任務", value="一般任務"),
+    app_commands.Choice(name="限時任務", value="限時任務"),
+    app_commands.Choice(name="特殊任務", value="特殊任務"),
+])
+@app_commands.describe(
+    選擇欄位="選擇任務所屬欄位分類",
+    任務名="任務名稱（玩家文章標題需包含此名稱）",
+    獎勵說明="獎勵文字敘述 (例如：$ 5,000、容貌+10、極光胸針x1)",
+    金錢獎勵="自動匯入銀行的金錢金額 (可填 0)",
+    數值獎勵說明="獲得的數值說明 (例如: 容貌+10，無則留空)",
+    獎勵道具名="自動送入背包的道具名 (選填)",
+    獎勵道具數量="自動送入背包的道具數量 (預設 1)",
+    限時時間="僅限時任務需填寫，格式：YYYY/M/D HH:MM～YYYY/M/D HH:MM"
+)
+async def add_quest(
+    interaction: discord.Interaction,
+    選擇欄位: app_commands.Choice[str],
+    任務名: str,
+    獎勵說明: str,
+    金錢獎勵: int = 0,
+    數值獎勵說明: str = "",
+    獎勵道具名: str = None,
+    獎勵道具數量: int = 1,
+    限時時間: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 僅有伺服器管理員可新增任務！", ephemeral=True)
+        return
+
+    category = 選擇欄位.value
+    time_limit_str = ""
+
+    # 檢查限時任務條件與時間格式
+    if category == "限時任務":
+        if not 限時時間:
+            await interaction.response.send_message(
+                "❌ 欄位為【限時任務】時，必須填寫【限時時間】！\n範例格式：`2026/6/5 12:00～2026/6/15 12:00`", 
+                ephemeral=True
+            )
+            return
+
+        # 格式正規表達式驗證
+        time_pattern = r"^\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}～\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}$"
+        if not re.match(time_pattern, 限時時間.strip()):
+            await interaction.response.send_message(
+                "❌ 時間格式不正確！必須為 `年月日 時間～年月日 時間`\n例如：`2026/6/5 12:00～2026/6/15 12:00`", 
+                ephemeral=True
+            )
+            return
+        time_limit_str = 限時時間.strip()
+
+    # 道具獎勵封裝
+    items = []
+    if 獎勵道具名:
+        items.append({"name": 獎勵道具名.strip(), "amount": 獎勵道具數量})
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute("""
+                INSERT INTO quests (category, title, reward_desc, reward_cash, reward_items, reward_stats, time_limit)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (category, 任務名.strip(), 獎勵說明.strip(), 金錢獎勵, json.dumps(items, ensure_ascii=False), 數值獎勵說明.strip(), time_limit_str))
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            await interaction.response.send_message(f"❌ 任務名稱 `{任務名}` 已經存在，請勿重複建立！", ephemeral=True)
+            return
+
+    time_info = f"\n⏳ 限時時間：`{time_limit_str}`" if time_limit_str else ""
+    await interaction.response.send_message(
+        f"✅ 成功發布新任務！\n📌 分類：【{category}】\n🏷️ 任務名：**{任務名}**\n🎁 獎勵：{獎勵說明}{time_info}"
+    )
 
 # -------------------- 清理伺服器專屬重複指令 --------------------
 @bot.command()
