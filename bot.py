@@ -1060,24 +1060,26 @@ async def clean_guild(ctx):
     await bot.tree.sync(guild=ctx.guild)
     await ctx.send("🧹 重複指令已清空！現在只保留單一全域指令。")
 
-# -------------------- 啟動與同步 --------------------
-# -------------------- 啟動、載入模組與強制同步 --------------------
+# -------------------- 啟動、載入模組與全域同步 --------------------
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        # 1. 初始化資料庫
+        await init_db()
+        
+        # 2. 正式載入 cogs 模組
+        try:
+            await self.load_extension("cogs.stats_and_ranks")
+            print("✅【模組載入成功】cogs/stats_and_ranks.py")
+        except Exception as e:
+            print(f"❌【模組載入失敗】: {e}")
+
+bot = MyBot(command_prefix="!", intents=intents)
+
 @bot.event
 async def on_ready():
-    await init_db()
-    
-    # 啟動定時任務
     if 'daily_interest' in globals() and not daily_interest.is_running():
         daily_interest.start()
 
-    # 1. 載入 cogs 模組（加上詳細除錯紀錄）
-    try:
-        await bot.load_extension("cogs.stats_and_ranks")
-        print("✅【模組載入成功】cogs/stats_and_ranks.py")
-    except Exception as e:
-        print(f"❌【模組載入失敗】無法載入 cogs/stats_and_ranks.py: {e}")
-
-    # 2. 全域同步
     try:
         synced = await bot.tree.sync()
         print(f"====================================")
@@ -1090,6 +1092,20 @@ async def on_ready():
 
     print(f"流光城系統已就緒：{bot.user}")
 
+# -------------------- 管理員手動強制同步 --------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sync(ctx):
+    msg = await ctx.send("⏳ 正在強制同步所有指令至本伺服器...")
+    try:
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await msg.edit(content=f"✅ 強制同步完成！已載入 **{len(synced)}** 個指令。")
+    except Exception as e:
+        await msg.edit(content=f"❌ 同步失敗: `{e}`")
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+bot.run(TOKEN)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
