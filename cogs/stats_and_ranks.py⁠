@@ -1,0 +1,291 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import aiosqlite
+import json
+import re
+
+DB_PATH = "game_database.db"
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, target_char: str = None):
+        super().__init__(timeout=180)
+        self.target_char = target_char
+
+    @discord.ui.button(label="📜 完整榜單", style=discord.ButtonStyle.primary)
+    async def full_board(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT name, stat_key FROM leaderboards") as cur:
+                boards = await cur.fetchall()
+
+        if not boards:
+            await interaction.response.send_message("📋 目前伺服器尚未建立任何榜單！", ephemeral=True)
+            return
+
+        class BoardSelect(discord.ui.Select):
+            def __init__(self):
+                opts = [
+                    discord.SelectOption(label=b[0], description=f"排名依據：{b[1]}", value=f"{b[0]}:{b[1]}")
+                    for b in boards[:25]
+                ]
+                super().__init__(placeholder="請選擇欲調閱的排行榜單...", options=opts)
+
+            async def callback(self, inter: discord.Interaction):
+                b_name, s_key = self.values[0].split(":", 1)
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT name, stats FROM characters") as cur:
+                        all_chars = await cur.fetchall()
+
+                ranked = []
+                for name, s_json in all_chars:
+                    st = json.loads(s_json) if s_json else {}
+                    val = st.get(s_key, 0)
+                    ranked.append((name, val))
+
+                ranked.sort(key=lambda x: x[1], reverse=True)
+
+                embed = discord.Embed(title=f"🏆【{b_name}】全城排名 (TOP 10)", color=0xF1C40F)
+                lines = []
+                medals = ["🥇", "🥈", "🥉"]
+                for i, (cname, val) in enumerate(ranked[:10]):
+                    prefix = medals[i] if i < 3 else f"`#{i+1}`"
+                    lines.append(f"{prefix} **{cname}** ｜ {s_key}：**{val:,}**")
+
+                embed.description = "\n".join(lines) if lines else "暫無數據"
+                await inter.response.send_message(embed=embed, ephemeral=True)
+
+        v = discord.ui.View()
+        v.add_item(BoardSelect())
+        await interaction.response.send_message("請選擇想查閱的榜單：", view=v, ephemeral=True)
+
+    @discord.ui.button(label="👤 個人排名", style=discord.ButtonStyle.secondary)
+    async def personal_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.target_char:
+            await interaction.response.send_message("⚠️ 請於發送指令時指定【角色名】，以便查詢該角色排名！", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT name, stat_key FROM leaderboards") as cur:
+                boards = await cur.fetchall()
+            async with db.execute("SELECT name, stats FROM characters") as cur:
+                all_chars = await cur.fetchall()
+
+        if not boards:
+            await interaction.response.send_message("📋 尚未建立任何榜單！", ephemeral=True)
+            return
+
+        embed = discord.Embed(title=f"📊【{self.target_char}】各榜單排行成績", color=0x3498DB)
+        lines = []
+
+        for b_name, s_key in boards:
+            ranked = []
+            for name, s_json in all_chars:
+                st = json.loads(s_json) if s_json else {}
+                ranked.append((name, st.get(s_key, 0)))
+            ranked.sort(key=lambda x: x[1], reverse=True)
+
+            rank_pos = "未入榜"
+            val = 0
+            for idx, (cname, score) in enumerate(ranked):
+                if cname == self.target_char:
+                    rank_pos = f"第 **{idx + 1}** 名"
+                    val = score
+                    break
+            lines.append(f"• **{b_name}** ({s_key})：{rank_pos} ｜ 數值：`{val}`")
+
+        embed.description = "\n".join(lines)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class StatsAndRanksCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    # -------------------- 指令：/數值登記 --------------------
+    @app_commands.command(name="數值登記", description="為角色登記/調整數值，或貼上人設單連結自動解析全部數值")
+    @app_commands.describe(
+        角色名="欲變更數值的角色名稱",
+        數值="欲變更的數值名稱（若貼人設單請填'自動'或留空）",
+        數字="增減數值點數（例如 10 或 -5，人設單模式填 0）",
+        人設單連結="貼上包含人設單內容的帖子/討論串或訊息連結"
+    )
+    async def register_stats_cmd(
+        self,
+        interaction: discord.Interaction,
+        角色名: str,
+        數值: str = "自動",
+        數字: int = 0,
+        人設單連結: str = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id, stats FROM characters WHERE name = ?", (角色名,)) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    await interaction.followup.send(f"❌ 查無角色 `{角色名}` 的檔案！", ephemeral=True)
+                    return
+                u_id, stats_json = row
+                if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                    await interaction.followup.send("❌ 你只能為自己持有的角色登記數值！", ephemeral=True)
+                    return
+
+            char_stats = json.loads(stats_json) if stats_json else {}
+
+            # 模式 A：人設單連結全自動爬取解析
+            if 人設單連結:
+                link_match = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 人設單連結)
+                if not link_match:
+                    await interaction.followup.send("❌ 人設單連結格式不正確！", ephemeral=True)
+                    return
+
+                c_id = int(link_match.group(1))
+                m_id = int(link_match.group(2)) if link_match.group(2) else None
+                post_content = ""
+                try:
+                    ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
+                    if isinstance(ch, discord.Thread):
+                        # 抓取討論串內第一則創立訊息
+                        first_msg = None
+                        async for msg in ch.history(limit=5, oldest_first=True):
+                            first_msg = msg
+                            break
+                        post_content = first_msg.content if first_msg else ch.name
+                    elif m_id:
+                        msg = await ch.fetch_message(m_id)
+                        post_content = msg.content
+                except Exception as e:
+                    await interaction.followup.send(f"❌ 無法讀取該文章內容：`{e}`", ephemeral=True)
+                    return
+
+                # 自動擷取並更新流光幣/現金
+                cash_match = re.search(r"(?:流光幣|現金|持有金錢)[^\d]*(\d+)", post_content)
+                if cash_match:
+                    await db.execute("UPDATE characters SET cash = ? WHERE name = ?", (int(cash_match.group(1)), 角色名))
+
+                # 自動擷取各項量化屬性
+                stat_patterns = [
+                    r"(流量熱度|商業價值|路人緣|公關力|公關|影響指數|容貌|才智|健康值|死忠粉絲數|活躍黑粉數)[^\d]*(\d+)",
+                    r"(唱跳|演繹|主持|歌唱|綜藝|個人才藝)[^\d]*(\d+)"
+                ]
+                added_records = []
+                for pattern in stat_patterns:
+                    for match_key, match_val in re.findall(pattern, post_content):
+                        std_key = "公關" if match_key == "公關力" else match_key
+                        char_stats[std_key] = int(match_val)
+                        added_records.append(f"{std_key}:{match_val}")
+
+                await db.execute("UPDATE characters SET stats = ? WHERE name = ?", (json.dumps(char_stats, ensure_ascii=False), 角色名))
+                await db.commit()
+
+                summary = "、".join(added_records[:8])
+                await interaction.followup.send(f"🎉 角色 **{角色名}** 人設單數值已自動同步完畢！\n📊 錄入數值：{summary} 等。")
+                return
+
+            # 模式 B：手動增減單項數值
+            if 數值 == "自動":
+                await interaction.followup.send("❌ 請輸入欲增減的【數值名稱】或貼上【人設單連結】！", ephemeral=True)
+                return
+
+            char_stats[數值] = char_stats.get(數值, 0) + 數字
+            await db.execute("UPDATE characters SET stats = ? WHERE name = ?", (json.dumps(char_stats, ensure_ascii=False), 角色名))
+            await db.commit()
+
+            sign = "+" if 數字 >= 0 else ""
+            await interaction.followup.send(f"✅ 已為 **{角色名}** 更新數值！【{數值} {sign}{數字}】（當前值：{char_stats[數值]}）")
+
+    # -------------------- 指令：/新增榜單 (管理員專用) --------------------
+    @app_commands.command(name="新增榜單", description="【管理員專用】新增全城競爭排行榜單")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(榜單名字="榜單名稱 (例如: 身價巔峰榜)", 相關數值="排名依據的屬性 (例如: 影響指數、商業價值)")
+    async def create_leaderboard(self, interaction: discord.Interaction, 榜單名字: str, 相關數值: str):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 權限不足：僅管理員可建立榜單！", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            try:
+                await db.execute("INSERT INTO leaderboards (name, stat_key) VALUES (?, ?)", (榜單名字.strip(), 相關數值.strip()))
+                await db.commit()
+            except aiosqlite.IntegrityError:
+                await interaction.response.send_message(f"❌ 榜單 `{榜單名字}` 已存在！", ephemeral=True)
+                return
+
+        await interaction.response.send_message(f"🏆 成功建立榜單：**【{榜單名字}】**（依據：`{相關數值}`）！")
+
+    # -------------------- 指令：/排行查詢 --------------------
+    @app_commands.command(name="排行查詢", description="查詢各項名人榜單或查看個人的各項榜單名次")
+    @app_commands.describe(角色名="若要查看個人排名請填寫你的角色名稱")
+    async def rank_query(self, interaction: discord.Interaction, 角色名: str = None):
+        view = LeaderboardView(target_char=角色名)
+        await interaction.response.send_message("🏆 請選擇你想查看的排行形式：", view=view, ephemeral=True)
+
+    # -------------------- 指令：/獎勵登記 (管理員專用) --------------------
+    @app_commands.command(name="獎勵登記", description="【管理員專用】下發綜合獎勵（金錢入銀行、物品入背包、數值加總）")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        角色名="獲取獎勵的角色名稱",
+        金錢="匯入該角色銀行的金額 (可填 0)",
+        物品名稱="直接匯入背包的道具名 (選填)",
+        物品數量="匯入背包的數量 (預設 1)",
+        數值名稱="增加的數值項目 (例如: 容貌、才智、技能)",
+        數值點數="增加的點數 (可填 0)"
+    )
+    async def admin_reward(
+        self,
+        interaction: discord.Interaction,
+        角色名: str,
+        金錢: int = 0,
+        物品名稱: str = None,
+        物品數量: int = 1,
+        數值名稱: str = None,
+        數值點數: int = 0
+    ):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 僅有伺服器管理員可登記發放獎勵！", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT stats FROM characters WHERE name = ?", (角色名,)) as cur:
+                char_row = await cur.fetchone()
+                if not char_row:
+                    await interaction.response.send_message(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
+                    return
+                stats = json.loads(char_row[0]) if char_row[0] else {}
+
+            reward_msgs = []
+
+            # 1. 金錢進入銀行
+            if 金錢 > 0:
+                await db.execute("UPDATE characters SET bank = bank + ? WHERE name = ?", (金錢, 角色名))
+                reward_msgs.append(f"💰 銀行存款 +${金錢:,}")
+
+            # 2. 道具進入背包
+            if 物品名稱:
+                async with db.execute(
+                    "SELECT id FROM inventory WHERE owner_name = ? AND item_name = ? AND giver = '管理員獎勵'",
+                    (角色名, 物品名稱)
+                ) as cur:
+                    inv_row = await cur.fetchone()
+                    if inv_row:
+                        await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (物品數量, inv_row[0]))
+                    else:
+                        await db.execute(
+                            "INSERT INTO inventory (owner_name, item_name, amount, giver) VALUES (?, ?, ?, '管理員獎勵')",
+                            (角色名, 物品名稱, 物品數量)
+                        )
+                reward_msgs.append(f"📦 物品 **{物品名稱}** ×{物品數量}")
+
+            # 3. 數值自動計入
+            if 數值名稱 and 數值點數 != 0:
+                stats[數值名稱] = stats.get(數值名稱, 0) + 數值點數
+                await db.execute("UPDATE characters SET stats = ? WHERE name = ?", (json.dumps(stats, ensure_ascii=False), 角色名))
+                reward_msgs.append(f"✨ 數值【{數值名稱}】+{數值點數} (總計: {stats[數值名稱]})")
+
+            await db.commit()
+
+        detail = " ｜ ".join(reward_msgs) if reward_msgs else "無實質資產發放"
+        await interaction.response.send_message(f"🎁 管理員已成功為【{角色名}】發放獎勵：\n{detail}")
+
+async def setup(bot):
+    await bot.add_cog(StatsAndRanksCog(bot))
