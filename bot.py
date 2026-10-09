@@ -128,6 +128,20 @@ async def init_db():
                 PRIMARY KEY (char_name, quest_title)
             )
         """)
+        # 確保 characters 表擁有 stats 欄位
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN stats TEXT DEFAULT '{}'")
+        except Exception:
+            pass
+
+        # 全城自定義排行榜單清單表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                stat_key TEXT
+            )
+        """)
 
 
 # -------------------- 定時任務 --------------------
@@ -334,13 +348,13 @@ async def inventory(interaction: discord.Interaction, 角色名: str):
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="使用_選擇自己的角色", description="使用背包物品獲得數值")
+@bot.tree.command(name="使用_選擇自己的角色", description="使用背包中的道具，數值自動累計入角色檔案")
 async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: str):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id, amount FROM inventory WHERE owner_name = ? AND item_name = ?", (角色名, 物品名)) as cur:
             inv = await cur.fetchone()
             if not inv or inv[1] <= 0:
-                await interaction.response.send_message("❌ 背包中沒有該物品！", ephemeral=True)
+                await interaction.response.send_message("❌ 背包中沒有該物品或數量不足！", ephemeral=True)
                 return
 
         async with db.execute("SELECT usable, stat_bonus FROM shop_items WHERE name = ?", (物品名,)) as cur:
@@ -348,15 +362,33 @@ async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: 
             if not item_info or item_info[0] == 0:
                 await interaction.response.send_message(f"⚠️ **{物品名}** 為不可使用之物品！", ephemeral=True)
                 return
-            bonus = item_info[1]
+            bonus_str = item_info[1]
 
+        # 扣減背包 1 個
         if inv[1] == 1:
             await db.execute("DELETE FROM inventory WHERE id = ?", (inv[0],))
         else:
             await db.execute("UPDATE inventory SET amount = amount - 1 WHERE id = ?", (inv[0],))
+
+        # 自動解析數值並計入角色 stats
+        stat_delta_msg = ""
+        stat_match = re.search(r"([^\d+-]+)\s*([+-]?\d+)", bonus_str)
+        if stat_match:
+            stat_name = stat_match.group(1).strip()
+            stat_val = int(stat_match.group(2))
+
+            async with db.execute("SELECT stats FROM characters WHERE name = ?", (角色名,)) as cur:
+                char_row = await cur.fetchone()
+                stats = json.loads(char_row[0]) if char_row and char_row[0] else {}
+
+            stats[stat_name] = stats.get(stat_name, 0) + stat_val
+            await db.execute("UPDATE characters SET stats = ? WHERE name = ?", (json.dumps(stats, ensure_ascii=False), 角色名))
+            stat_delta_msg = f"\n📊 **{stat_name}** 已自動更新至 **{stats[stat_name]}**！"
+
         await db.commit()
 
-    await interaction.response.send_message(f"✨ **{角色名}** 使用了 **{物品名}**！獲得加成：【{bonus}】（剩餘數量: {inv[1] - 1}）")
+    await interaction.response.send_message(f"✨ **{角色名}** 使用了 **{物品名}**！獲得加成：【{bonus_str}】{stat_delta_msg}（剩餘數量: {inv[1] - 1}）")
+
 
 @bot.tree.command(name="贈予_選擇自己的角色", description="贈送物品給其他玩家或 NPC")
 async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名: str, 物品名: str, 數量: int):
@@ -1048,6 +1080,26 @@ async def on_ready():
         print(f"❌ 同步指令失敗: {e}")
         
     print(f"流光城管理系統已上線：{bot.user}")
+
+@bot.event
+async def on_ready():
+    await init_db()
+    if 'daily_interest' in globals() and not daily_interest.is_running():
+        daily_interest.start()
+        
+    # 自動載入 cogs 模組
+    try:
+        await bot.load_extension("cogs.stats_and_ranks")
+        print("✅ 成功載入數值與排行榜模組 (cogs/stats_and_ranks.py)")
+    except Exception as e:
+        print(f"❌ 模組載入失敗: {e}")
+
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ 成功全域同步 {len(synced)} 個 Slash 指令！")
+    except Exception as e:
+        print(f"同步失敗: {e}")
+    print(f"機器人已上線：{bot.user}")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
