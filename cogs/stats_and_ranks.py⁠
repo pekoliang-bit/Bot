@@ -145,7 +145,6 @@ class StatsAndRanksCog(commands.Cog):
                 try:
                     ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
                     if isinstance(ch, discord.Thread):
-                        # 抓取討論串內第一則創立訊息
                         first_msg = None
                         async for msg in ch.history(limit=5, oldest_first=True):
                             first_msg = msg
@@ -163,7 +162,7 @@ class StatsAndRanksCog(commands.Cog):
                 if cash_match:
                     await db.execute("UPDATE characters SET cash = ? WHERE name = ?", (int(cash_match.group(1)), 角色名))
 
-                # 自動擷取各項量化屬性
+                # 自動擷取各項屬性
                 stat_patterns = [
                     r"(流量熱度|商業價值|路人緣|公關力|公關|影響指數|容貌|才智|健康值|死忠粉絲數|活躍黑粉數)[^\d]*(\d+)",
                     r"(唱跳|演繹|主持|歌唱|綜藝|個人才藝)[^\d]*(\d+)"
