@@ -1061,14 +1061,23 @@ async def clean_guild(ctx):
     await ctx.send("🧹 重複指令已清空！現在只保留單一全域指令。")
 
 # -------------------- 啟動與同步 --------------------
+# -------------------- 啟動、載入模組與強制同步 --------------------
 @bot.event
 async def on_ready():
     await init_db()
     
-    # 修正定時任務名稱（原定義為 daily_interest）
+    # 啟動定時任務
     if 'daily_interest' in globals() and not daily_interest.is_running():
         daily_interest.start()
-        
+
+    # 1. 載入 cogs 模組（加上詳細除錯紀錄）
+    try:
+        await bot.load_extension("cogs.stats_and_ranks")
+        print("✅【模組載入成功】cogs/stats_and_ranks.py")
+    except Exception as e:
+        print(f"❌【模組載入失敗】無法載入 cogs/stats_and_ranks.py: {e}")
+
+    # 2. 全域同步
     try:
         synced = await bot.tree.sync()
         print(f"====================================")
@@ -1077,29 +1086,10 @@ async def on_ready():
             print(f"📌 指令: /{cmd.name}")
         print(f"====================================")
     except Exception as e:
-        print(f"❌ 同步指令失敗: {e}")
-        
-    print(f"流光城管理系統已上線：{bot.user}")
+        print(f"❌ 指令同步失敗: {e}")
 
-@bot.event
-async def on_ready():
-    await init_db()
-    if 'daily_interest' in globals() and not daily_interest.is_running():
-        daily_interest.start()
-        
-    # 自動載入 cogs 模組
-    try:
-        await bot.load_extension("cogs.stats_and_ranks")
-        print("✅ 成功載入數值與排行榜模組 (cogs/stats_and_ranks.py)")
-    except Exception as e:
-        print(f"❌ 模組載入失敗: {e}")
+    print(f"流光城系統已就緒：{bot.user}")
 
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ 成功全域同步 {len(synced)} 個 Slash 指令！")
-    except Exception as e:
-        print(f"同步失敗: {e}")
-    print(f"機器人已上線：{bot.user}")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
