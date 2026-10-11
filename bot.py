@@ -517,16 +517,25 @@ async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: 
         else:
             await db.execute("UPDATE inventory SET amount = amount - 1 WHERE id = ?", (inv[0],))
 
-        # 自動解析數值並計入角色 stats
-        stat_delta_msg = ""
-        stat_match = re.search(r"([^\d+-]+)\s*([+-]?\d+)", bonus_str)
-        if stat_match:
-            stat_name = stat_match.group(1).strip()
-            stat_val = int(stat_match.group(2))
+    # 自動解析數值並計入角色 stats
+    stat_delta_msg = ""
+    stat_match = re.search(r"([^\d+-]+)\s*([+-]?\d+)", bonus_str)
+    if stat_match:
+        stat_name = stat_match.group(1).strip()
+        stat_val = int(stat_match.group(2))
 
-            async with db.execute("SELECT stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
-                char_row = await cur.fetchone()
-                stats = json.loads(char_row[0]) if char_row and char_row[0] else {}
+        async with db.execute("SELECT stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
+            char_row = await cur.fetchone()
+            stats = json.loads(char_row[0]) if char_row and char_row[0] else {}
+
+        stats[stat_name] = stats.get(stat_name, 0) + stat_val
+        await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(stats, ensure_ascii=False), g_id, 角色名))
+        stat_delta_msg = f"\n📊 **{stat_name}** 已自動更新至 **{stats[stat_name]}**！"
+
+    await db.commit()
+
+    await interaction.response.send_message(f"✨ **{角色名}** 使用了 **{物品名}**！獲得加成：【{bonus_str}】{stat_delta_msg}{role_msg}")
+
 # -------------------- 指令：/返回原本地圖 --------------------
 @bot.tree.command(name="返回原本地圖", description="主動結束地圖旅行並收回身分組（免除遣返懲罰）")
 async def return_home(interaction: discord.Interaction, 角色名: str):
