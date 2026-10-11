@@ -280,7 +280,7 @@ class BuyModal(discord.ui.Modal, title="購買商品確認"):
         total_cost = self.price * qty
         async with aiosqlite.connect(DB_PATH) as db:
          # 替換第 282 行開始的檢查邏輯
-        async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
+            async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
             user = await cur.fetchone()
             if not user or user[0] < total_cost:
                 await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
