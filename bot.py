@@ -45,7 +45,7 @@ REPORT_CHANNEL_ID = 1557017138806521947  # 指定回報區頻道 ID
 # -------------------- 資料庫初始化（加入伺服器隔離） --------------------
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # 1. 角色表 (以 guild_id + name 為唯一主鍵)
+        # 1. 角色表 (以 guild_id + name 為唯一主鍵，含 ticket_ban_until)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS characters (
                 guild_id INTEGER,
@@ -60,6 +60,7 @@ async def init_db():
                 works TEXT DEFAULT '[]',
                 created_at REAL,
                 stats TEXT DEFAULT '{}',
+                ticket_ban_until REAL DEFAULT 0,
                 PRIMARY KEY (guild_id, name)
             )
         """)
@@ -74,7 +75,7 @@ async def init_db():
                 giver TEXT DEFAULT '系統商城'
             )
         """)
-        # 3. 商店表
+        # 3. 商店表 (含 target_role_id 門票身分組)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS shop_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +87,7 @@ async def init_db():
                 stat_bonus TEXT,
                 affinity_bonus INTEGER DEFAULT 0,
                 usable INTEGER DEFAULT 1,
+                target_role_id INTEGER DEFAULT 0,
                 seller TEXT DEFAULT '官方'
             )
         """)
@@ -153,13 +155,28 @@ async def init_db():
                 stat_key TEXT
             )
         """)
+        # 10. 活躍門票時效追蹤表 (支援多伺服器，兩週 336 小時倒數)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                user_id INTEGER,
+                role_id INTEGER,
+                ticket_name TEXT,
+                start_time REAL,
+                expire_time REAL
+            )
+        """)
 
-        # 資料庫欄位升級檢查
+        # 資料庫欄位熱升級檢查 (防呆自動補欄位)
         tables_to_check = [
             ("characters", "guild_id INTEGER DEFAULT 0"),
             ("characters", "stats TEXT DEFAULT '{}'"),
+            ("characters", "ticket_ban_until REAL DEFAULT 0"),
             ("inventory", "guild_id INTEGER DEFAULT 0"),
             ("shop_items", "guild_id INTEGER DEFAULT 0"),
+            ("shop_items", "target_role_id INTEGER DEFAULT 0"),
             ("npcs", "guild_id INTEGER DEFAULT 0"),
             ("npc_affection", "guild_id INTEGER DEFAULT 0"),
             ("system_settings", "guild_id INTEGER DEFAULT 0"),
@@ -174,6 +191,7 @@ async def init_db():
                 pass
 
         await db.commit()
+
 
 # -------------------- 定時任務 --------------------
 @tasks.loop(hours=24)
@@ -193,6 +211,34 @@ async def daily_interest():
                 (g_id,)
             )
         await db.commit()
+        # 每小時檢查票券是否超期（超過 336 小時未返回則強制遣返 + 懲罰 300 小時禁購）
+@tasks.loop(hours=1)
+async def check_ticket_expiration():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
+            expired = await cur.fetchall()
+
+        for record in expired:
+            rec_id, c_name, u_id, g_id, r_id, t_name = record
+            guild = bot.get_guild(g_id)
+            if guild:
+                member = guild.get_member(u_id)
+                role = guild.get_role(r_id)
+                if member and role:
+                    try:
+                        await member.remove_roles(role, reason="大地圖門票逾期未返回，系統強制遣返")
+                    except Exception:
+                        pass
+
+            # 加上懲罰：禁止購票 300 小時 (300 * 3600 秒)
+            ban_until = now + (300 * 3600)
+            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE name = ?", (ban_until, c_name))
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
+            print(f"[{datetime.now()}] 角色【{c_name}】門票超期未歸，已強制收回身分組並限制購票 300 小時！")
+
+        await db.commit()
+
 
 @tasks.loop(hours=24)
 async def monthly_age_up():
@@ -233,19 +279,24 @@ class BuyModal(discord.ui.Modal, title="購買商品確認"):
 
         total_cost = self.price * qty
         async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT cash FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
-                user = await cur.fetchone()
-                if not user or user[0] < total_cost:
-                    await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
+         # 替換第 282 行開始的檢查邏輯
+        async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
+            user = await cur.fetchone()
+            if not user or user[0] < total_cost:
+                await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
+                return
+            cash, ticket_ban_until = user
+
+        # 檢查是否為門票且處於 300 小時禁購期
+        now = time.time()
+        async with db.execute("SELECT shop_name, target_role_id FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
+            s_item = await cur.fetchone()
+            if s_item and (s_item[0] == "票務系統" or (s_item[1] and s_item[1] > 0)):
+                if ticket_ban_until and ticket_ban_until > now:
+                    remain_hours = int((ticket_ban_until - now) / 3600)
+                    await interaction.response.send_message(f"🚫 該角色因先前逾期未返回遭遣返，目前處於購票懲罰期！尚餘 **{remain_hours}** 小時禁止購票。", ephemeral=True)
                     return
 
-            async with db.execute("SELECT seller FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
-                seller_row = await cur.fetchone()
-                seller = seller_row[0] if seller_row else '官方'
-
-            await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, self.buyer))
-            if seller != '官方':
-                await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, seller))
 
             async with db.execute(
                 "SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ? AND giver = '系統商城'",
@@ -369,7 +420,7 @@ async def create_profile(interaction: discord.Interaction, 名字: str, 年齡: 
 
     await interaction.response.send_message(f"🎉 角色 **{名字}** 檔案建立成功！")
 
-@bot.tree.command(name="商城_選擇自己的角色", description="選擇商城並購買商品")
+@bot.tree.command(name="商城", description="選擇商城並購買商品")
 async def shop(interaction: discord.Interaction, 角色名: str):
     g_id = interaction.guild_id
     async with aiosqlite.connect(DB_PATH) as db:
@@ -381,13 +432,16 @@ async def shop(interaction: discord.Interaction, 角色名: str):
         async with db.execute("SELECT DISTINCT shop_name FROM shop_items WHERE guild_id = ?", (g_id,)) as cur:
             shops = [row[0] for row in await cur.fetchall()]
 
-    if "二手" not in shops:
-        shops.append("二手")
+        # 確保預設商城分頁包含「票務系統」與「二手」
+    for default_s in ["票務系統", "二手"]:
+        if default_s not in shops:
+            shops.append(default_s)
+
 
     view = ShopSelectView(角色名, shops, g_id)
     await interaction.response.send_message(f"🏬 請選擇 **{角色名}** 想進入的商店：", view=view, ephemeral=True)
 
-@bot.tree.command(name="背包_選擇自己的角色", description="查看角色背包物品與來源")
+@bot.tree.command(name="背包", description="查看角色背包物品與來源")
 async def inventory(interaction: discord.Interaction, 角色名: str):
     g_id = interaction.guild_id
     async with aiosqlite.connect(DB_PATH) as db:
@@ -404,7 +458,7 @@ async def inventory(interaction: discord.Interaction, 角色名: str):
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="使用_選擇自己的角色", description="使用背包中的道具，數值自動累計入角色檔案")
+@bot.tree.command(name="使用", description="使用背包中的道具，數值自動累計入角色檔案")
 async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: str):
     g_id = interaction.guild_id
     async with aiosqlite.connect(DB_PATH) as db:
@@ -420,6 +474,34 @@ async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: 
                 await interaction.response.send_message(f"⚠️ **{物品名}** 為不可使用之物品！", ephemeral=True)
                 return
             bonus_str = item_info[1]
+    # 修改原本第 463 行的查詢，補上 target_role_id
+    async with db.execute("SELECT usable, stat_bonus, target_role_id FROM shop_items WHERE guild_id = ? AND name = ?", (g_id, 物品名)) as cur:
+        item_info = await cur.fetchone()
+        if not item_info or item_info[0] == 0:
+            await interaction.response.send_message(f"⚠️ **{物品名}** 為不可使用之物品！", ephemeral=True)
+            return
+        usable, bonus_str, target_role_id = item_info
+
+    # 處理門票身分組派發與 336 小時倒數
+    role_msg = ""
+    now = time.time()
+    if target_role_id and target_role_id > 0:
+        role = interaction.guild.get_role(target_role_id)
+        if role:
+            try:
+                await interaction.user.add_roles(role, reason=f"使用門票【{物品名}】")
+                role_msg = f"\n🗺️ 已獲得大地圖身分組 **【{role.name}】**！"
+            except Exception as e:
+                role_msg = f"\n⚠️ 身分組派發失敗（請確認機器人權限高於該身分組）：{e}"
+
+        expire_at = now + (336 * 3600)  # 兩週 = 336 小時
+        await db.execute("""
+            INSERT INTO active_tickets (guild_id, char_name, user_id, role_id, ticket_name, start_time, expire_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (g_id, 角色名, interaction.user.id, target_role_id, 物品名, now, expire_at))
+        role_msg += f"\n⏰ **簽證有效時間：336 小時（兩週）**。請在到期前使用 `/返回原本地圖`，否則將強制遣返並**限制 300 小時不得購票**！"
+
+    # (下方接原本扣減背包與數值增加邏輯，最後將 role_msg 附在訊息結尾)
 
         # 扣減背包 1 個
         if inv[1] == 1:
@@ -437,6 +519,29 @@ async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: 
             async with db.execute("SELECT stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
                 char_row = await cur.fetchone()
                 stats = json.loads(char_row[0]) if char_row and char_row[0] else {}
+# -------------------- 指令：/返回原本地圖 --------------------
+@bot.tree.command(name="返回原本地圖", description="主動結束地圖旅行並收回身分組（免除遣返懲罰）")
+async def return_home(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, role_id, ticket_name FROM active_tickets WHERE guild_id = ? AND char_name = ?", (g_id, 角色名)) as cur:
+            ticket = await cur.fetchone()
+            if not ticket:
+                await interaction.response.send_message(f"ℹ️ 角色 **{角色名}** 目前並無啟用中的外地簽證或門票身分組！", ephemeral=True)
+                return
+
+            t_id, role_id, ticket_name = ticket
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await interaction.user.remove_roles(role, reason="玩家主動返回原本地圖")
+                except Exception:
+                    pass
+
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (t_id,))
+            await db.commit()
+
+    await interaction.response.send_message(f"🏠 **{角色名}** 已順利返回原本地圖！已安全繳回門票身分組，無任何懲罰。")
 
             stats[stat_name] = stats.get(stat_name, 0) + stat_val
             await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(stats, ensure_ascii=False), g_id, 角色名))
@@ -446,7 +551,7 @@ async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: 
 
     await interaction.response.send_message(f"✨ **{角色名}** 使用了 **{物品名}**！獲得加成：【{bonus_str}】{stat_delta_msg}（剩餘數量: {inv[1] - 1}）")
 
-@bot.tree.command(name="贈予_選擇自己的角色", description="贈送物品給其他玩家或 NPC")
+@bot.tree.command(name="贈予", description="贈送物品給其他玩家或 NPC")
 async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名: str, 物品名: str, 數量: int):
     g_id = interaction.guild_id
     if 數量 <= 0:
@@ -607,7 +712,7 @@ async def sell_item(interaction: discord.Interaction, 角色名: str, 物品名:
 
     await interaction.response.send_message(f"🏷️ 已將 **{物品名}** 上架至【二手】商城，定價為 **${價格:,}**！")
 
-@bot.tree.command(name="存錢_帳戶名", description="將現金存入銀行")
+@bot.tree.command(name="存錢", description="將現金存入銀行")
 async def deposit(interaction: discord.Interaction, 角色名: str, 金額: int):
     g_id = interaction.guild_id
     if 金額 <= 0:
@@ -626,7 +731,7 @@ async def deposit(interaction: discord.Interaction, 角色名: str, 金額: int)
 
     await interaction.response.send_message(f"🏦 **{角色名}** 成功存入 **${金額:,}**！")
 
-@bot.tree.command(name="取錢_帳戶名", description="從銀行取出金錢")
+@bot.tree.command(name="取錢", description="從銀行取出金錢")
 async def withdraw(interaction: discord.Interaction, 角色名: str, 金額: int):
     g_id = interaction.guild_id
     if 金額 <= 0:
@@ -645,7 +750,7 @@ async def withdraw(interaction: discord.Interaction, 角色名: str, 金額: int
 
     await interaction.response.send_message(f"💵 **{角色名}** 成功自銀行提款 **${金額:,}**！")
 
-@bot.tree.command(name="轉錢_帳戶名", description="轉帳給其他角色")
+@bot.tree.command(name="轉錢", description="轉帳給其他角色")
 async def transfer(interaction: discord.Interaction, 角色名: str, 對象名: str, 金額: int):
     g_id = interaction.guild_id
     if 金額 <= 0:
@@ -671,19 +776,53 @@ async def transfer(interaction: discord.Interaction, 角色名: str, 對象名: 
     await interaction.response.send_message(f"💸 **{角色名}** 成功轉帳 **${金額:,}** 給 **{對象名}**！")
 
 # -------------------- 管理員商城/利息/發薪 --------------------
-@bot.tree.command(name="商店與物品增加", description="［管理員］新增商店商品")
+@bot.tree.command(name="商店與物品增加", description="［管理員］新增商店商品或地圖票券")
 @app_commands.checks.has_permissions(administrator=True)
-async def add_shop_item(interaction: discord.Interaction, 商店: str, 商品名: str, 價格: int, 簡介: str, 增加數值: str, 增加好感: int, 可否使用: bool):
+@app_commands.describe(
+    商店="商品分類（若為門票請輸入「票務系統」）",
+    商品名="商品名稱",
+    價格="販售價格",
+    簡介="商品說明",
+    增加數值="使用時獲得數值 (如: 容貌+10)",
+    增加好感="贈送增加好感度",
+    可否使用="是否可使用",
+    是否為門票="若為大地圖門票請選 True",
+    對應地圖身分組="若為門票，必須指定使用後取得的地圖身分組"
+)
+async def add_shop_item(
+    interaction: discord.Interaction, 
+    商店: str, 
+    商品名: str, 
+    價格: int, 
+    簡介: str, 
+    增加數值: str, 
+    增加好感: int, 
+    可否使用: bool,
+    是否為門票: bool = False,
+    對應地圖身分組: discord.Role = None
+):
     g_id = interaction.guild_id
     usable_val = 1 if 可否使用 else 0
+    role_id = 0
+
+    if 是否為門票:
+        if not 對應地圖身分組:
+            await interaction.response.send_message("❌ 建立【門票】時，**必須指定「對應地圖身分組」**！", ephemeral=True)
+            return
+        role_id = 對應地圖身分組.id
+        if 商店 != "票務系統":
+            商店 = "票務系統"
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, seller)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '官方')
-        """, (g_id, 商店, 商品名, 價格, 簡介, 增加數值, 增加好感, usable_val))
+            INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, target_role_id, seller)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '官方')
+        """, (g_id, 商店, 商品名, 價格, 簡介, 增加數值, 增加好感, usable_val, role_id))
         await db.commit()
 
-    await interaction.response.send_message(f"✅ 管理員已在【{商店}】新增商品：**{商品名}**！")
+    role_info = f"\n🗺️ 綁定大地圖身分組：{對應地圖身分組.mention}（使用後獲得 336 小時權限）" if role_id > 0 else ""
+    await interaction.response.send_message(f"✅ 管理員已在【{商店}】新增商品：**{商品名}**！{role_info}")
+
 
 @bot.tree.command(name="npc登記", description="［管理員］登記 NPC 資料")
 @app_commands.checks.has_permissions(administrator=True)
