@@ -278,28 +278,35 @@ class BuyModal(discord.ui.Modal, title="購買商品確認"):
             return
 
         total_cost = self.price * qty
-        async with aiosqlite.connect(DB_PATH) as db:
-         # 替換第 282 行開始的檢查邏輯
-            async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
-            user = await cur.fetchone()
-            if not user or user[0] < total_cost:
-                await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
-                return
-            cash, ticket_ban_until = user
-
-        # 檢查是否為門票且處於 300 小時禁購期
         now = time.time()
-        async with db.execute("SELECT shop_name, target_role_id FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
-            s_item = await cur.fetchone()
-            if s_item and (s_item[0] == "票務系統" or (s_item[1] and s_item[1] > 0)):
-                if ticket_ban_until and ticket_ban_until > now:
-                    remain_hours = int((ticket_ban_until - now) / 3600)
-                    await interaction.response.send_message(f"🚫 該角色因先前逾期未返回遭遣返，目前處於購票懲罰期！尚餘 **{remain_hours}** 小時禁止購票。", ephemeral=True)
+        async with aiosqlite.connect(DB_PATH) as db:
+            # 檢查現金與禁令 (注意縮排：前方為 12 個空格)
+            async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
+                user = await cur.fetchone()
+                if not user or user[0] < total_cost:
+                    await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
                     return
+                cash, ticket_ban_until = user
 
+            # 檢查是否為門票且處於 300 小時禁購期
+            async with db.execute("SELECT shop_name, target_role_id FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
+                s_item = await cur.fetchone()
+                if s_item and (s_item[0] == "票務系統" or (s_item[1] and s_item[1] > 0)):
+                    if ticket_ban_until and ticket_ban_until > now:
+                        remain_hours = int((ticket_ban_until - now) / 3600)
+                        await interaction.response.send_message(f"🚫 該角色因先前逾期未返回遭遣返，目前處於購票懲罰期！尚餘 **{remain_hours}** 小時禁止購票。", ephemeral=True)
+                        return
+
+            async with db.execute("SELECT seller FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
+                seller_row = await cur.fetchone()
+                seller = seller_row[0] if seller_row else '官方'
+
+            await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, self.buyer))
+            if seller != '官方':
+                await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, seller))
 
             async with db.execute(
-                "SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ? AND giver = '系統商城'",
+                "SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?",
                 (self.guild_id, self.buyer, self.item_name)
             ) as cur:
                 inv_row = await cur.fetchone()
@@ -316,7 +323,8 @@ class BuyModal(discord.ui.Modal, title="購買商品確認"):
 
             await db.commit()
 
-        await interaction.response.send_message(f"✅ 成功購買 **{self.item_name}** ×{qty}！共扣款 **${total_cost:,}**。", ephemeral=True)
+        await interaction.response.send_message(f"✅ 成功購買 **{self.item_name}** ×{qty}！共扣款 **${total_cost:,}**。")
+
 
 class ShopSelectView(discord.ui.View):
     def __init__(self, char_name: str, shops: list, guild_id: int):
