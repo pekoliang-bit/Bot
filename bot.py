@@ -177,7 +177,7 @@ async def init_db():
                 expire_time REAL
             )
         """)
-        # 11. 咖位等級限制表 (順序數字越小咖位越高)
+        # 11. 咖位等級限制表 (順序數字越小地位越高)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS rank_settings (
                 guild_id INTEGER,
@@ -283,7 +283,7 @@ async def monthly_age_up():
 # -------------------- 咖位晉升判定核心模組 --------------------
 async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
     """
-    全自動檢查角色或 NPC 是否達到更高咖位的限制要求。
+    全自動檢查角色或 NPC 是否達到更高地位的限制要求。
     若達標且有名額，立即更新並發布升級提示。
     """
     async with aiosqlite.connect(DB_PATH) as db:
@@ -348,7 +348,7 @@ async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
             if not work_pass:
                 continue
 
-            # 4. 檢查代言限制 (例如：奢華2個, 高奢1個)
+            # 4. 檢查榮譽限制 (例如：奢華2個, 高奢1個)
             endorse_pass = True
             if endorse_req:
                 for req_part in re.split(r"[,，\s]+", endorse_req.strip()):
@@ -369,7 +369,7 @@ async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
                 await db.execute(f"UPDATE {tbl} SET rank = ? WHERE guild_id = ? AND name = ?", (r_name, guild_id, char_name))
                 await db.commit()
                 tag_label = "［官方 NPC］" if is_npc else ""
-                msg = f"🎉✨ **【咖位晉升榮耀】** ✨🎉\n恭喜 {tag_label}**{char_name}** 實力大突破，正式晉升業界咖位至：【**{r_name}**】！🏆"
+                msg = f"🎉✨ **【地位晉升榮耀】** ✨🎉\n恭喜 {tag_label}**{char_name}** 實力大突破，正式晉升至：【**{r_name}**】！🏆"
                 if channel:
                     try:
                         await channel.send(msg)
@@ -385,7 +385,7 @@ async def get_next_rank_info(guild_id: int, current_rank: str, stats: dict, work
             ranks = await cur.fetchall()
 
     if not ranks:
-        return "尚未設定任何咖位升級限制。"
+        return "尚未設定任何升級限制。"
 
     curr_order = 999
     for r in ranks:
@@ -400,33 +400,33 @@ async def get_next_rank_info(guild_id: int, current_rank: str, stats: dict, work
             break
 
     if not target_rank:
-        return "👑 已達到本城最高咖位等級！"
+        return "👑 已達到最高身分等級！"
 
     r_order, r_name, work_req, endorse_req, stat_req, max_slots = target_rank
     reqs = []
-    if work_req: reqs.append(f"作品需求：{work_req}")
-    if endorse_req: reqs.append(f"代言需求：{endorse_req}")
+    if work_req: reqs.append(f"成就需求：{work_req}")
+    if endorse_req: reqs.append(f"榮譽需求：{endorse_req}")
     if stat_req: reqs.append(f"數值需求：{stat_req}")
     if max_slots > 0: reqs.append(f"席位名額：全服限量 {max_slots} 人")
 
     return f"【下一目標：{r_name}】\n• " + "\n• ".join(reqs)
 
-# -------------------- 指令：/咖位等級限制（管理員專用，增修雙模式） --------------------
-@bot.tree.command(name="咖位等級限制", description="【管理員專用】設定、新增或修改全城咖位晉級標準")
+# -------------------- 指令：/地位等級限制（管理員專用，增修雙模式） --------------------
+@bot.tree.command(name="地位等級限制", description="【管理員專用】設定、新增或修改全服地位晉級標準")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(操作模式=[
     app_commands.Choice(name="增加（貼上文字/連結自動解析）", value="add"),
     app_commands.Choice(name="修改（手動微調特定順位標準）", value="edit"),
-    app_commands.Choice(name="清單檢視（查看當前所有咖位門檻）", value="list")
+    app_commands.Choice(name="清單檢視（查看當前所有地位門檻）", value="list")
 ])
 @app_commands.describe(
-    操作模式="選擇增加、修改或查看咖位規則",
-    內容或連結="［增加模式］貼上包含順序、作品、代言、數值、人數的文字或帖子連結",
+    操作模式="選擇增加、修改或查看地位規則",
+    內容或連結="［增加模式］貼上包含順序、成就、榮譽、數值、人數的文字或帖子連結",
     順序="［修改模式］欲修改的咖位級別 (純數字，越小越高)",
-    咖位等級="［修改模式］咖位名稱 (如: 頂流、一線大咖)",
-    作品限制="［修改模式］作品條件 (如: 電視劇2, 電影1)",
-    代言限制="［修改模式］代言標籤條件 (如: 奢華2, 高奢1)",
-    數值限制="［修改模式］數值門檻 (如: 商業價值500, 容貌300)",
+    地位等級="［修改模式］地位名稱 (如: 頂流、超級大咖)",
+    成就限制="［修改模式］對應成就數量 (如: 電視劇2, 電影1)",
+    榮譽限制="［修改模式］榮譽標籤條件 (如: 奢華2, 高奢1)",
+    數值限制="［修改模式］數值門檻 (如: 才智500, 容貌300)",
     人數="［修改模式］席位名額限制 (填 0 為不限名額)"
 )
 async def rank_setting_cmd(
@@ -434,9 +434,9 @@ async def rank_setting_cmd(
     操作模式: app_commands.Choice[str],
     內容或連結: str = None,
     順序: int = None,
-    咖位等級: str = None,
-    作品限制: str = "",
-    代言限制: str = "",
+    地位等級: str = None,
+    成就限制: str = "",
+    榮譽限制: str = "",
     數值限制: str = "",
     人數: int = 0
 ):
@@ -449,13 +449,13 @@ async def rank_setting_cmd(
                 rows = await cur.fetchall()
 
         if not rows:
-            await interaction.response.send_message("📋 本伺服器尚未建立任何咖位限制等級！", ephemeral=True)
+            await interaction.response.send_message("📋 本伺服器尚未建立任何地位限制等級！", ephemeral=True)
             return
 
-        embed = discord.Embed(title="👑 流光城業界咖位限制規範一覽表", color=0xF1C40F)
+        embed = discord.Embed(title="👑 地位限制規範一覽表", color=0xF1C40F)
         for r_order, r_name, w_req, e_req, s_req, slots in rows:
             slot_str = f"限量 {slots} 人" if slots > 0 else "名額不限"
-            detail = f"• 作品限制：{w_req or '無'}\n• 代言限制：{e_req or '無'}\n• 數值限制：{s_req or '無'}\n• 席位限制：{slot_str}"
+            detail = f"• 成就限制：{w_req or '無'}\n• 榮譽限制：{e_req or '無'}\n• 數值限制：{s_req or '無'}\n• 席位限制：{slot_str}"
             embed.add_field(name=f"順序 {r_order} ｜ 【{r_name}】", value=detail, inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
