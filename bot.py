@@ -2315,7 +2315,7 @@ async def view_quests(interaction: discord.Interaction, 角色名: str):
         embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
-# -------------------- 指令：/陣營 與 /陣營管理 --------------------
+    # -------------------- 指令：/陣營 --------------------
 @bot.tree.command(name="陣營", description="陣營主控台：捐獻、查看金庫排名、購買商城全體加成或退出")
 @app_commands.choices(操作=[
     app_commands.Choice(name="查看現況與領週禮包", value="view"),
@@ -2410,6 +2410,7 @@ async def faction_cmd(
             await db.execute("UPDATE characters SET faction = ? WHERE guild_id = ? AND name = ?", (t_faction, g_id, c_name))
             await db.commit()
         await interaction.response.send_message(f"🚩 恭喜 **{c_name}** 正式加入陣營【{t_faction}】！")
+
 
 # -------------------- 指令：/陣營管理 與 /金主降臨 --------------------
 @bot.tree.command(name="陣營管理", description="【管理員專用】建立全新陣營或向陣營全體發放獎勵")
