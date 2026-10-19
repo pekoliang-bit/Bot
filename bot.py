@@ -2368,8 +2368,25 @@ async def faction_cmd(
             await interaction.response.send_message("❌ 捐獻金額需大於 0！", ephemeral=True)
             return
         if cash < 金額:
-            await interaction.response.send_message(f"❌ 現金不足！目前手頭現金僅有 ${cash:,}。", ephemeral=True) return          async with aiosqlite.connect(DB_PATH) as db: await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (金額, g_id, c_name)) await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (金額, g_id, my_faction)) await db.execute(""" INSERT INTO faction_members (guild_id, faction_name, char_name, contribution) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ? """, (g_id, my_faction, c_name, 金額, 金額)) await db.commit()          await interaction.response.send_message(f"🤝 **{c_name}** 為陣營【{my_faction}】成功捐獻 **${金額:,}**！貢獻度同步增加。")      elif op == "buy": if my_faction == "無": await interaction.response.send_message("❌ 你尚未加入任何陣營！", ephemeral=True) return          async with aiosqlite.connect(DB_PATH) as db: async with db.execute("SELECT char_name FROM faction_members WHERE guild_id = ? AND faction_name = ? ORDER BY contribution DESC LIMIT 2", (g_id, my_faction)) as cur: leaders = [r[0] for r in await cur.fetchall()]              if c_name not in leaders and not interaction.user.guild_permissions.administrator: await interaction.response.send_message("🚫 權限不足！只有陣營內部貢獻前兩名（正副負責人）可以動用金庫購買全體 Buff！", ephemeral=True) return              cost = 100000 async with db.execute("SELECT treasury FROM factions WHERE guild_id = ? AND name = ?", (g_id, my_faction)) as cur: f_row = await cur.fetchone() treasury = f_row[0] if f_row else 0              if treasury < cost: await interaction.response.send_message(f"❌ 陣營公款不足！採購全體激勵加成需要金庫公款 **${cost:,}**（當前金庫: ${treasury:,}）。", ephemeral=True)
-                return
+            await interaction.response.send_message(f"❌ 現金不足！目前手頭現金僅有 ${cash:,}。", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (金額, g_id, c_name))
+            await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (金額, g_id, my_faction))
+            await db.execute("""
+                INSERT INTO faction_members (guild_id, faction_name, char_name, contribution)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
+            """, (g_id, my_faction, c_name, 金額, 金額))
+            await db.commit()
+
+        await interaction.response.send_message(f"🤝 **{c_name}** 為陣營【{my_faction}】成功捐獻 **${金額:,}**！貢獻度同步增加。")
+
+    elif op == "buy":
+        if my_faction == "無":
+            await interaction.response.send_message("❌ 你尚未加入任何陣營！", ephemeral=True)
+            return
 
             await db.execute("UPDATE factions SET treasury = treasury - ? WHERE guild_id = ? AND name = ?", (cost, g_id, my_faction))
             await db.execute("""
