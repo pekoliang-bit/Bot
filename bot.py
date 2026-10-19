@@ -55,7 +55,10 @@ async def init_db():
                 age INTEGER,
                 gender TEXT,
                 job TEXT,
-                faction TEXT,
+                faction TEXT DEFAULT '無',
+                tags TEXT DEFAULT '',
+                relationship_status TEXT DEFAULT '單身',
+                cp_info TEXT DEFAULT '{}',
                 cash INTEGER DEFAULT 0,
                 bank INTEGER DEFAULT 0,
                 works TEXT DEFAULT '[]',
@@ -63,10 +66,12 @@ async def init_db():
                 stats TEXT DEFAULT '{}',
                 ticket_ban_until REAL DEFAULT 0,
                 rank TEXT DEFAULT '未定級',
+                is_npc INTEGER DEFAULT 0,
+                company_id INTEGER DEFAULT 0,
                 PRIMARY KEY (guild_id, name)
             )
         """)
-        # 2. 背包表
+        # 2. 背包與二手
         await db.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +82,7 @@ async def init_db():
                 giver TEXT DEFAULT '系統商城'
             )
         """)
-        # 3. 商店表
+        # 3. 官方/二手商店
         await db.execute("""
             CREATE TABLE IF NOT EXISTS shop_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,37 +95,24 @@ async def init_db():
                 affinity_bonus INTEGER DEFAULT 0,
                 usable INTEGER DEFAULT 1,
                 target_role_id INTEGER DEFAULT 0,
-                seller TEXT DEFAULT '官方'
+                seller TEXT DEFAULT '官方',
+                asset_type TEXT DEFAULT '一般',
+                faction_name TEXT DEFAULT ''
             )
         """)
-        # 4. NPC 名冊表
+        # 4. 交際傾向關係表
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS npcs (
+            CREATE TABLE IF NOT EXISTS relationships (
                 guild_id INTEGER,
-                name TEXT,
-                age INTEGER,
-                gender TEXT,
-                identity TEXT,
-                avatar_url TEXT,
-                stats TEXT DEFAULT '{}',
-                cash INTEGER DEFAULT 0,
-                bank INTEGER DEFAULT 0,
-                works TEXT DEFAULT '[]',
-                rank TEXT DEFAULT '未定級',
-                PRIMARY KEY (guild_id, name)
-            )
-        """)
-        # 5. NPC 好感度表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS npc_affection (
-                guild_id INTEGER,
-                char_name TEXT,
-                npc_name TEXT,
+                from_char TEXT,
+                to_char TEXT,
+                tendency TEXT DEFAULT '普通',
                 affection INTEGER DEFAULT 0,
-                PRIMARY KEY (guild_id, char_name, npc_name)
+                status_desc TEXT DEFAULT '初識',
+                PRIMARY KEY (guild_id, from_char, to_char)
             )
         """)
-        # 6. 系統參數表
+        # 5. 系統設定
         await db.execute("""
             CREATE TABLE IF NOT EXISTS system_settings (
                 guild_id INTEGER,
@@ -129,7 +121,82 @@ async def init_db():
                 PRIMARY KEY (guild_id, key)
             )
         """)
-        # 7. 任務總表
+        # 6. 審核兩段式紀錄表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                guild_id INTEGER,
+                message_link TEXT,
+                char_name TEXT,
+                audit_count INTEGER DEFAULT 1,
+                PRIMARY KEY (guild_id, message_link)
+            )
+        """)
+        # 7. 資產產權表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS personal_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                asset_type TEXT,
+                asset_name TEXT,
+                price INTEGER,
+                details TEXT DEFAULT ''
+            )
+        """)
+        # 8. 公司體系表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                purpose TEXT,
+                type_name TEXT,
+                structure TEXT,
+                creator_name TEXT,
+                partners TEXT DEFAULT '[]',
+                total_capital INTEGER DEFAULT 0,
+                split_ratio REAL DEFAULT 0.5,
+                allowed_jobs TEXT DEFAULT '',
+                balance INTEGER DEFAULT 0
+            )
+        """)
+        # 9. 陣營總表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS factions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                desc TEXT,
+                tax_rate REAL DEFAULT 0.1,
+                exit_fee INTEGER DEFAULT 5000,
+                treasury INTEGER DEFAULT 0,
+                weekly_gift TEXT DEFAULT '{}',
+                top_rewards TEXT DEFAULT '[]'
+            )
+        """)
+        # 10. 陣營貢獻紀錄表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS faction_members (
+                guild_id INTEGER,
+                faction_name TEXT,
+                char_name TEXT,
+                contribution INTEGER DEFAULT 0,
+                last_gift_week INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, faction_name, char_name)
+            )
+        """)
+        # 11. 陣營作品抽成查核表 (確保每部作品/任務只扣款一次)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS work_tax_logs (
+                guild_id INTEGER,
+                char_name TEXT,
+                work_title TEXT,
+                tax_paid INTEGER DEFAULT 0,
+                paid_at REAL,
+                PRIMARY KEY (guild_id, char_name, work_title)
+            )
+        """)
+        # 12. 任務總表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS quests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,7 +213,6 @@ async def init_db():
                 report_channel_id INTEGER DEFAULT 0
             )
         """)
-        # 8. 任務完成記錄表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS quest_completions (
                 guild_id INTEGER,
@@ -156,29 +222,7 @@ async def init_db():
                 PRIMARY KEY (guild_id, char_name, quest_title)
             )
         """)
-        # 9. 排行榜單表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS leaderboards (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                name TEXT,
-                stat_key TEXT
-            )
-        """)
-        # 10. 活躍門票時效追蹤表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS active_tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                char_name TEXT,
-                user_id INTEGER,
-                role_id INTEGER,
-                ticket_name TEXT,
-                start_time REAL,
-                expire_time REAL
-            )
-        """)
-        # 11. 地位等級限制表
+        # 13. 地位等級限制表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS rank_settings (
                 guild_id INTEGER,
@@ -191,7 +235,16 @@ async def init_db():
                 PRIMARY KEY (guild_id, rank_order)
             )
         """)
-        # 12. 抽獎獎項資料表
+        # 14. 排行榜單表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                stat_key TEXT
+            )
+        """)
+        # 15. 抽獎獎項資料表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS lottery_pools (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,37 +257,19 @@ async def init_db():
                 can_repeat INTEGER DEFAULT 1
             )
         """)
-
-        # 資料庫熱升級檢查
-        tables_to_check = [
-            ("characters", "guild_id INTEGER DEFAULT 0"),
-            ("characters", "stats TEXT DEFAULT '{}'"),
-            ("characters", "ticket_ban_until REAL DEFAULT 0"),
-            ("characters", "rank TEXT DEFAULT '未定級'"),
-            ("inventory", "guild_id INTEGER DEFAULT 0"),
-            ("shop_items", "guild_id INTEGER DEFAULT 0"),
-            ("shop_items", "target_role_id INTEGER DEFAULT 0"),
-            ("npcs", "guild_id INTEGER DEFAULT 0"),
-            ("npcs", "stats TEXT DEFAULT '{}'"),
-            ("npcs", "cash INTEGER DEFAULT 0"),
-            ("npcs", "bank INTEGER DEFAULT 0"),
-            ("npcs", "works TEXT DEFAULT '[]'"),
-            ("npcs", "rank TEXT DEFAULT '未定級'"),
-            ("npc_affection", "guild_id INTEGER DEFAULT 0"),
-            ("system_settings", "guild_id INTEGER DEFAULT 0"),
-            ("quests", "guild_id INTEGER DEFAULT 0"),
-            ("quests", "report_channel_id INTEGER DEFAULT 0"),
-            ("quests", "achievement TEXT DEFAULT ''"),
-            ("quests", "honor TEXT DEFAULT ''"),
-            ("quests", "requirement TEXT DEFAULT ''"),
-            ("quest_completions", "guild_id INTEGER DEFAULT 0"),
-            ("leaderboards", "guild_id INTEGER DEFAULT 0")
-        ]
-        for tbl, col_def in tables_to_check:
-            try:
-                await db.execute(f"ALTER TABLE {tbl} ADD COLUMN {col_def}")
-            except Exception:
-                pass
+        # 16. 門票時效
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                user_id INTEGER,
+                role_id INTEGER,
+                ticket_name TEXT,
+                start_time REAL,
+                expire_time REAL
+            )
+        """)
 
         await db.commit()
 
@@ -251,7 +286,6 @@ async def daily_interest():
                 rate = float(row[0]) if row else 0.05
 
             await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
-            await db.execute(f"UPDATE npcs SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
         await db.commit()
 
 @tasks.loop(hours=1)
@@ -295,23 +329,71 @@ async def monthly_age_up():
                     )
         await db.commit()
 
+# -------------------- 陣營作品自動扣稅核心函式 --------------------
+async def process_faction_tax(guild_id: int, char_name: str, work_title: str, gross_reward: int, channel=None):
+    """
+    確保在作品登記、獎勵全額入帳後，進行陣營抽成。每個作品只會扣款一次。
+    """
+    if gross_reward <= 0:
+        return ""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 檢查是否已經扣過稅
+        async with db.execute(
+            "SELECT 1 FROM work_tax_logs WHERE guild_id = ? AND char_name = ? AND work_title = ?",
+            (guild_id, char_name, work_title)
+        ) as cur:
+            if await cur.fetchone():
+                return ""  # 已經扣過，直接跳過
+
+        # 2. 獲取角色所屬陣營
+        async with db.execute("SELECT faction FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
+            c_row = await cur.fetchone()
+            if not c_row or c_row[0] in ["無", "官方勢力", ""]:
+                return ""
+            faction_name = c_row[0]
+
+        # 3. 獲取陣營抽成比例
+        async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (guild_id, faction_name)) as cur:
+            f_row = await cur.fetchone()
+            if not f_row:
+                return ""
+            tax_rate = f_row[0]
+
+        tax_amount = int(gross_reward * tax_rate)
+        if tax_amount <= 0:
+            return ""
+
+        # 4. 自角色銀行扣除稅款，並注入陣營金庫公款，同步提升個人陣營貢獻度
+        await db.execute("UPDATE characters SET bank = bank - ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, char_name))
+        await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, faction_name))
+        await db.execute("""
+            INSERT INTO faction_members (guild_id, faction_name, char_name, contribution)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
+        """, (guild_id, faction_name, char_name, tax_amount, tax_amount))
+
+        # 5. 寫入防重複日誌
+        await db.execute(
+            "INSERT INTO work_tax_logs (guild_id, char_name, work_title, tax_paid, paid_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, char_name, work_title, tax_amount, time.time())
+        )
+        await db.commit()
+
+    return f"\n🏛️ **陣營抽成**：因作品《{work_title}》收益已入帳，陣營【{faction_name}】扣繳 {int(tax_rate*100)}% 稅款 **${tax_amount:,}** 注入陣營公款（個人貢獻增加）！"
+
 # -------------------- 地位晉升判定核心 --------------------
 async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
     async with aiosqlite.connect(DB_PATH) as db:
-        is_npc = False
-        async with db.execute("SELECT stats, works, rank FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
+        async with db.execute("SELECT stats, works, rank, is_npc FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
             row = await cur.fetchone()
-        if not row:
-            async with db.execute("SELECT stats, works, rank FROM npcs WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
-                row = await cur.fetchone()
-                if row:
-                    is_npc = True
         if not row:
             return
 
         stats = json.loads(row[0]) if row[0] else {}
         works = json.loads(row[1]) if row[1] else []
         current_rank = row[2] or "未定級"
+        is_npc_val = row[3]
 
         async with db.execute("SELECT rank_order, rank_name, work_req, endorse_req, stat_req, max_slots FROM rank_settings WHERE guild_id = ? ORDER BY rank_order ASC", (guild_id,)) as cur:
             ranks = await cur.fetchall()
@@ -323,9 +405,7 @@ async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
             if max_slots > 0:
                 async with db.execute("SELECT COUNT(*) FROM characters WHERE guild_id = ? AND rank = ?", (guild_id, r_name)) as c_cur:
                     c_cnt = (await c_cur.fetchone())[0]
-                async with db.execute("SELECT COUNT(*) FROM npcs WHERE guild_id = ? AND rank = ?", (guild_id, r_name)) as n_cur:
-                    n_cnt = (await n_cur.fetchone())[0]
-                if (c_cnt + n_cnt) >= max_slots and current_rank != r_name:
+                if c_cnt >= max_slots and current_rank != r_name:
                     continue
 
             stat_pass = True
@@ -370,10 +450,9 @@ async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
                 continue
 
             if current_rank != r_name:
-                tbl = "npcs" if is_npc else "characters"
-                await db.execute(f"UPDATE {tbl} SET rank = ? WHERE guild_id = ? AND name = ?", (r_name, guild_id, char_name))
+                await db.execute("UPDATE characters SET rank = ? WHERE guild_id = ? AND name = ?", (r_name, guild_id, char_name))
                 await db.commit()
-                tag_label = "［官方 NPC］" if is_npc else ""
+                tag_label = "［NPC］" if is_npc_val > 0 else ""
                 msg = f"🎉✨ **【地位晉升榮耀】** ✨🎉\n恭喜 {tag_label}**{char_name}** 實力大突破，正式晉升業界地位至：【**{r_name}**】！🏆"
                 if channel:
                     try:
@@ -414,29 +493,17 @@ async def get_next_rank_info(guild_id: int, current_rank: str, stats: dict, work
 
     return f"【下一目標：{r_name}】\n• " + "\n• ".join(reqs)
 
-# -------------------- 字數結算輔助函式 --------------------
+# -------------------- 字數統計輔助 --------------------
 def count_text_words(text: str, mode: str) -> int:
-    """
-    根據後台設定模式統計字數：
-    1. chinese_only: 僅中文字
-    2. chinese_punct: 中文字加標點符號 (預設)
-    3. chinese_english: 中文字加英文字
-    4. all: 全部字元 (含所有語言文字、符號、標點，排除純換行空白)
-    """
-    # 先剔除掉 Discord 自帶的艾特語法 <@!123456789>
     clean = re.sub(r"<@!?\d+>", "", text).strip()
-
     if mode == "chinese_only":
         return len(re.findall(r"[\u4e00-\u9fa5]", clean))
     elif mode == "chinese_punct":
-        # 中文字 + 常見全半形標點符號
         pattern = r"[\u4e00-\u9fa5]|[\u3000-\u303F\uFF00-\uFFEF!\"#$%&'()*+,-./:;<=>?@[\\\]^_`{|}~]"
         return len(re.findall(pattern, clean))
     elif mode == "chinese_english":
-        # 中文字 + 英文單字/字母
         return len(re.findall(r"[\u4e00-\u9fa5]|[a-zA-Z]+", clean))
     else:
-        # 全部字元（排除空白與換行）
         return len(re.sub(r"\s+", "", clean))
 
 # -------------------- 訊息監聽：@機器人 自動字數結算 --------------------
@@ -445,9 +512,7 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # 檢查是否艾特了機器人
     if bot.user in message.mentions:
-        # 限制：只能在討論串（Thread）或論壇帖子的留言區使用
         if not isinstance(message.channel, discord.Thread):
             await message.reply("⚠️ **此功能只能在討論串或帖子裡的留言區使用！**", mention_author=True)
             return
@@ -455,7 +520,6 @@ async def on_message(message: discord.Message):
         g_id = message.guild.id
         target_text = ""
 
-        # 優先抓取：玩家回覆（Reply）的那則訊息
         if message.reference and message.reference.message_id:
             try:
                 ref_msg = await message.channel.fetch_message(message.reference.message_id)
@@ -463,13 +527,11 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
 
-        # 若不是回覆，則抓取 message 自己的文字（排除艾特），若本身太短則向上抓取該使用者最近發布的一條留言
         if not target_text or len(re.sub(r"<@!?\d+>", "", target_text).strip()) == 0:
             content_without_mention = re.sub(r"<@!?\d+>", "", message.content).strip()
             if len(content_without_mention) > 0:
                 target_text = content_without_mention
             else:
-                # 向上搜尋該作者最新的一條非空發言
                 async for prev_msg in message.channel.history(limit=10, before=message):
                     if prev_msg.author.id == message.author.id and len(prev_msg.content.strip()) > 0:
                         target_text = prev_msg.content
@@ -479,14 +541,13 @@ async def on_message(message: discord.Message):
             await message.reply("❌ 找不到可結算的文字內容！請回覆你要結算的段落，或在該段落中艾特我。", mention_author=True)
             return
 
-        # 讀取伺服器專屬結算設定
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT key, value FROM system_settings WHERE guild_id = ?", (g_id,)) as cur:
                 settings = dict(await cur.fetchall())
 
         mode = settings.get("word_calc_mode", "chinese_punct")
         unit = settings.get("currency_unit", "元")
-        ratio = float(settings.get("word_money_ratio", "1.0"))  # 1 字 = 1 元
+        ratio = float(settings.get("word_money_ratio", "1.0"))
 
         word_count = count_text_words(target_text, mode)
         total_money = int(word_count * ratio)
@@ -499,7 +560,7 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
-# -------------------- 指令：/結算調整（管理員專用） --------------------
+# -------------------- 指令：/結算調整 --------------------
 @bot.tree.command(name="結算調整", description="【管理員專用】自訂字數計算規則、貨幣單位與兌換比率")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(計算內容=[
@@ -511,7 +572,7 @@ async def on_message(message: discord.Message):
 @app_commands.describe(
     計算內容="選擇艾特結算時的統計模式",
     貨幣單位="自訂金錢單位（例如：元、銀子、銅錢、流光幣，預設為元）",
-    一字折合金錢="設定每 1 字可換得多少金錢 (純整數或小數，例如: 1 或 0.5，預設為 1)"
+    一字折合金錢="設定每 1 字可換得多少金錢 (例如: 1 或 0.5，預設 1)"
 )
 async def adjust_word_settlement(
     interaction: discord.Interaction,
@@ -539,7 +600,6 @@ async def adjust_word_settlement(
             INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'word_money_ratio', ?)
             ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
         """, (g_id, str(一字折合金錢), str(一字折合金錢)))
-
         await db.commit()
 
     embed = discord.Embed(title="⚙️ 討論串字數結算規則已更新", color=0x2ECC71)
@@ -548,7 +608,7 @@ async def adjust_word_settlement(
     embed.add_field(name="換算比率", value=f"每 1 字 = {一字折合金錢} {貨幣單位.strip()}", inline=True)
     await interaction.response.send_message(embed=embed)
 
-# -------------------- 指令：抽獎系統模組 --------------------
+# -------------------- 指令：抽獎系統 --------------------
 @bot.tree.command(name="新增抽獎", description="【管理員專用】在伺服器發布全新的獎項抽獎池")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
@@ -642,8 +702,6 @@ async def view_lottery(interaction: discord.Interaction):
 @bot.tree.command(name="我要抽獎", description="在對應獎項的討論串中進行抽獎（討論串名需與獎項名相同）")
 async def play_lottery(interaction: discord.Interaction):
     g_id = interaction.guild_id
-
-    # 檢查是否在討論串內
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("❌ **【我要抽獎】只能在專屬的獎項討論串內使用！**", ephemeral=True)
         return
@@ -651,7 +709,6 @@ async def play_lottery(interaction: discord.Interaction):
     thread_name = interaction.channel.name.strip()
 
     async with aiosqlite.connect(DB_PATH) as db:
-        # 搜尋與該討論串名稱相符的抽獎活動
         async with db.execute(
             "SELECT id, lottery_name, allowed_role_id, item_name, remaining_count, can_repeat FROM lottery_pools WHERE guild_id = ? AND lottery_name = ?",
             (g_id, thread_name)
@@ -664,19 +721,16 @@ async def play_lottery(interaction: discord.Interaction):
 
         pool_id, l_name, req_role, item_name, rem_count, can_rep = pool
 
-        # 身分組資格校驗
         if req_role > 0:
             user_role_ids = [r.id for r in interaction.user.roles]
             if req_role not in user_role_ids:
                 await interaction.response.send_message(f"🚫 資格不符！本獎項限定持有身分組 <@&{req_role}> 才能抽取。", ephemeral=True)
                 return
 
-        # 庫存校驗
         if can_rep == 0 and rem_count <= 0:
             await interaction.response.send_message(f"😢 很遺憾，【{l_name}】的所有獎品已經被全數抽完，活動已結束！", ephemeral=True)
             return
 
-        # 執行抽獎扣減
         if can_rep == 0:
             await db.execute("UPDATE lottery_pools SET remaining_count = remaining_count - 1 WHERE id = ?", (pool_id,))
             new_rem = rem_count - 1
@@ -688,7 +742,1339 @@ async def play_lottery(interaction: discord.Interaction):
     rem_msg = f"（本獎品為不可重複限量品，全場尚餘 **{new_rem}** 件！）" if can_rep == 0 else ""
     await interaction.response.send_message(f"🎰✨ **【幸運開獎】** ✨🎰\n恭喜 {interaction.user.mention} 成功在【{l_name}】抽中了：\n🎁 **{item_name}**！{rem_msg}")
 
-# -------------------- 指令：/地位等級限制（管理員專用） --------------------
+# -------------------- 指令：/檔案建立 & /官方npc登記 --------------------
+@bot.tree.command(name="檔案建立", description="建立玩家個人藝人角色或個人NPC檔案")
+@app_commands.choices(類別=[
+    app_commands.Choice(name="玩家角色", value="0"),
+    app_commands.Choice(name="玩家NPC", value="2")
+])
+@app_commands.describe(
+    名字="角色全名",
+    年齡="純數字",
+    性別="性別",
+    職業身分="職業或目前身分",
+    標籤="個人特質標籤 (例如: 實力派, 厭世臉)",
+    感情狀況="選填 (例如: 單身, 隱婚, 熱戀中)"
+)
+async def create_profile(
+    interaction: discord.Interaction,
+    類別: app_commands.Choice[str],
+    名字: str,
+    年齡: int,
+    性別: str,
+    職業身分: str,
+    標籤: str,
+    感情狀況: str = "單身"
+):
+    g_id = interaction.guild_id
+    target_name = 名字.strip()
+    is_npc_val = int(類別.value)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+            if await cur.fetchone():
+                await interaction.response.send_message(f"❌ 名稱 **{target_name}** 已存在！", ephemeral=True)
+                return
+
+        await db.execute("""
+            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc)
+            VALUES (?, ?, ?, ?, ?, ?, '無', ?, ?, ?, ?)
+        """, (g_id, interaction.user.id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time(), is_npc_val))
+        await db.commit()
+
+    label = "玩家角色" if is_npc_val == 0 else "玩家自製 NPC"
+    await interaction.response.send_message(f"🎉 【{label}】**{target_name}** 建立成功！\n• 標籤：`{標籤}` ｜ 感情狀態：`{感情狀況}`")
+
+@bot.tree.command(name="官方npc登記", description="【管理員專用】登記官方全域 NPC 檔案")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    名字="NPC 姓名",
+    年齡="年齡",
+    性別="性別",
+    職業身分="官方身分或職業",
+    標籤="NPC 專屬標籤",
+    感情狀況="選填 (預設未知)"
+)
+async def register_official_npc(
+    interaction: discord.Interaction,
+    名字: str,
+    年齡: int,
+    性別: str,
+    職業身分: str,
+    標籤: str,
+    感情狀況: str = "未知"
+):
+    g_id = interaction.guild_id
+    target_name = 名字.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc)
+            VALUES (?, 0, ?, ?, ?, ?, '官方勢力', ?, ?, ?, 1)
+            ON CONFLICT(guild_id, name) DO UPDATE SET
+                age = excluded.age, gender = excluded.gender, job = excluded.job, tags = excluded.tags, relationship_status = excluded.relationship_status
+        """, (g_id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time()))
+        await db.commit()
+
+    await interaction.response.send_message(f"👑 官方 NPC **{target_name}** 登記完畢！")
+
+# -------------------- 指令：/檔案更新（含作品抽成觸發） --------------------
+class ProfileUpdateStepView(discord.ui.View):
+    def __init__(self, char_name: str, guild_id: int, is_admin: bool):
+        super().__init__(timeout=180)
+        self.char_name = char_name
+        self.guild_id = guild_id
+        self.is_admin = is_admin
+
+    @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary)
+    async def update_base(self, interaction: discord.Interaction, button: discord.ui.Button):
+        class BaseModal(discord.ui.Modal, title=f"更新【{self.char_name}】個人資料"):
+            field_choice = discord.ui.TextInput(label="欲修改欄位 (職業/標籤/感情狀況/CP)", placeholder="例如: 感情狀況 或 CP")
+            new_val = discord.ui.TextInput(label="修改後內容", placeholder="填入新資料，若為CP請填: 名字/關係")
+
+            async def on_submit(m_self, inter: discord.Interaction):
+                f_name = m_self.field_choice.value.strip()
+                val = m_self.new_val.value.strip()
+                async with aiosqlite.connect(DB_PATH) as db:
+                    if f_name in ["職業", "身分", "job"]:
+                        await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    elif f_name in ["標籤", "tags"]:
+                        await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    elif f_name in ["感情狀況", "感情"]:
+                        await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    elif f_name in ["CP", "cp"]:
+                        cp_parts = re.split(r"[/,，\s]+", val)
+                        cp_obj = {"target": cp_parts[0], "relation": cp_parts[1] if len(cp_parts) > 1 else "伴侶"}
+                        await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.guild_id, self.char_name))
+                    else:
+                        await inter.response.send_message("❌ 無法識別該欄位名稱！", ephemeral=True)
+                        return
+                    await db.commit()
+                await inter.response.send_message(f"✅ 【{self.char_name}】的 **{f_name}** 已更新為：`{val}`！", ephemeral=True)
+
+        await interaction.response.send_modal(BaseModal())
+
+    @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success)
+    async def update_achievement(self, interaction: discord.Interaction, button: discord.ui.Button):
+        class AchieveModal(discord.ui.Modal, title=f"登記【{self.char_name}】成就歷練"):
+            category = discord.ui.TextInput(label="分類 (電影/電視劇/綜藝/大型事件等)", placeholder="例如: 電影")
+            title = discord.ui.TextInput(label="作品/成就名稱", placeholder="例如: 楚門的世界")
+            role_type = discord.ui.TextInput(label="擔任/番位", placeholder="例如: 女主、男配、主策劃")
+
+            async def on_submit(m_self, inter: discord.Interaction):
+                entry = {
+                    "category": "成就",
+                    "type": m_self.category.value.strip(),
+                    "title": m_self.title.value.strip(),
+                    "extra": m_self.role_type.value.strip()
+                }
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
+                        works = json.loads((await cur.fetchone())[0] or "[]")
+                    works.append(entry)
+                    await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
+                    await db.commit()
+
+                # 自動觸發地位檢測
+                await check_and_update_rank(self.guild_id, self.char_name, inter.channel)
+                await inter.response.send_message(f"✅ 成功為 **{self.char_name}** 登記成就：【{entry['type']}】《{entry['title']}》（{entry['extra']}）！", ephemeral=True)
+
+        await interaction.response.send_modal(AchieveModal())
+
+    @discord.ui.button(label="🎖️ 榮譽更新", style=discord.ButtonStyle.secondary)
+    async def update_honor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        class HonorModal(discord.ui.Modal, title=f"登記【{self.char_name}】榮譽頭銜"):
+            name = discord.ui.TextInput(label="榮譽名稱 / 代言商品", placeholder="例如: 香奈兒全球代言")
+            level = discord.ui.TextInput(label="級別 (如: 奢華, S+, 頂級)", placeholder="例如: 奢華")
+            title_name = discord.ui.TextInput(label="授予頭銜", placeholder="例如: 品牌摯友 / 終身榮譽會員")
+
+            async def on_submit(m_self, inter: discord.Interaction):
+                entry = {
+                    "category": "榮譽",
+                    "title": m_self.name.value.strip(),
+                    "extra": f"{m_self.level.value.strip()} ｜ {m_self.title_name.value.strip()}"
+                }
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
+                        works = json.loads((await cur.fetchone())[0] or "[]")
+                    works.append(entry)
+                    await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
+                    await db.commit()
+
+                await check_and_update_rank(self.guild_id, self.char_name, inter.channel)
+                await inter.response.send_message(f"✅ 成功為 **{self.char_name}** 登記榮譽：【{entry['title']}】（{entry['extra']}）！", ephemeral=True)
+
+        await interaction.response.send_modal(HonorModal())
+
+    @discord.ui.button(label="💬 交際關係傾向", style=discord.ButtonStyle.danger)
+    async def update_relationship(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'tendency_list'", (self.guild_id,)) as cur:
+                row = await cur.fetchone()
+                tendencies = json.loads(row[0]) if row and row[0] else ["傾心", "好奇", "觀察", "痴迷", "友好", "敵對", "利用"]
+
+        class RelationModal(discord.ui.Modal, title=f"變更【{self.char_name}】對其他人的交際傾向"):
+            target = discord.ui.TextInput(label="目標角色/NPC 名稱", placeholder="輸入對方全名")
+            tendency = discord.ui.TextInput(label=f"交際傾向 ({'/'.join(tendencies[:6])})", placeholder="輸入傾向詞彙")
+            status = discord.ui.TextInput(label="狀況敘述 (可選)", placeholder="例如: 暗中保護、針鋒相對", required=False)
+
+            async def on_submit(m_self, inter: discord.Interaction):
+                t_name = m_self.target.value.strip()
+                t_val = m_self.tendency.value.strip()
+                s_val = m_self.status.value.strip() or "普通往來"
+
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute("""
+                        INSERT INTO relationships (guild_id, from_char, to_char, tendency, status_desc)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(guild_id, from_char, to_char) DO UPDATE SET tendency = ?, status_desc = ?
+                    """, (self.guild_id, self.char_name, t_name, t_val, s_val, t_val, s_val))
+                    await db.commit()
+                await inter.response.send_message(f"💞 已更新 **{self.char_name}** $\\rightarrow$ **{t_name}** 的交際傾向為【{t_val}】（狀態：{s_val}）！", ephemeral=True)
+
+        await interaction.response.send_modal(RelationModal())
+
+@bot.tree.command(name="檔案更新", description="更新個資、成就、榮譽或交際關係")
+@app_commands.choices(類別=[
+    app_commands.Choice(name="官方 NPC", value="官方npc"),
+    app_commands.Choice(name="玩家自設 NPC", value="玩家npc"),
+    app_commands.Choice(name="自身角色", value="角色")
+])
+async def update_profile_cmd(interaction: discord.Interaction, 類別: app_commands.Choice[str]):
+    g_id = interaction.guild_id
+    is_admin = interaction.user.guild_permissions.administrator
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        if 類別.value == "官方npc":
+            if not is_admin:
+                await interaction.response.send_message("❌ 僅有管理員可操作官方 NPC！", ephemeral=True)
+                return
+            async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND is_npc = 1", (g_id,)) as cur:
+                candidates = [r[0] for r in await cur.fetchall()]
+        elif 類別.value == "玩家npc":
+            async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND user_id = ? AND is_npc = 2", (g_id, interaction.user.id)) as cur:
+                candidates = [r[0] for r in await cur.fetchall()]
+        else:
+            if is_admin:
+                async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND is_npc = 0", (g_id,)) as cur:
+                    candidates = [r[0] for r in await cur.fetchall()]
+            else:
+                async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND user_id = ? AND is_npc = 0", (g_id, interaction.user.id)) as cur:
+                    candidates = [r[0] for r in await cur.fetchall()]
+
+    if not candidates:
+        await interaction.response.send_message(f"❌ 查無符合【{類別.name}】的可操作名單！", ephemeral=True)
+        return
+
+    if len(candidates) > 1:
+        class CharPickView(discord.ui.View):
+            @discord.ui.select(placeholder="請選擇欲操作的檔案...", options=[discord.SelectOption(label=c, value=c) for c in candidates[:25]])
+            async def select_callback(self, inter: discord.Interaction, select: discord.ui.Select):
+                view = ProfileUpdateStepView(select.values[0], g_id, is_admin)
+                await inter.response.send_message(f"⚙️ 正在更新【{select.values[0]}】的檔案，請點選下方操作：", view=view, ephemeral=True)
+
+        await interaction.response.send_message("請先選擇要更新的角色檔案：", view=CharPickView(), ephemeral=True)
+    else:
+        char_name = candidates[0]
+        view = ProfileUpdateStepView(char_name, g_id, is_admin)
+        await interaction.response.send_message(f"⚙️ 正在更新【{char_name}】的檔案，請點選下方操作：", view=view, ephemeral=True)
+
+# -------------------- 指令：/傾向管理 --------------------
+@bot.tree.command(name="傾向管理", description="【管理員專用】新增或刪減交際傾向詞庫（傾心、好奇、觀察、痴迷等）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(操作=[
+    app_commands.Choice(name="新增傾向", value="add"),
+    app_commands.Choice(name="刪除傾向", value="remove"),
+    app_commands.Choice(name="列出目前傾向", value="list")
+])
+@app_commands.describe(操作="選擇要執行的動作", 詞彙="欲新增或刪減的傾向名稱")
+async def manage_tendency(interaction: discord.Interaction, 操作: app_commands.Choice[str], 詞彙: str = None):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'tendency_list'", (g_id,)) as cur:
+            row = await cur.fetchone()
+            tendencies = json.loads(row[0]) if row and row[0] else ["傾心", "好奇", "觀察", "痴迷", "友好", "敵對", "利用"]
+
+        if 操作.value == "list":
+            await interaction.response.send_message(f"📋 目前伺服器交際傾向詞庫：\n`{'、'.join(tendencies)}`", ephemeral=True)
+            return
+
+        if not 詞彙:
+            await interaction.response.send_message("❌ 請填寫傾向詞彙！", ephemeral=True)
+            return
+
+        word = 詞彙.strip()
+        if 操作.value == "add":
+            if word not in tendencies:
+                tendencies.append(word)
+        elif 操作.value == "remove":
+            if word in tendencies:
+                tendencies.remove(word)
+
+        await db.execute("""
+            INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'tendency_list', ?)
+            ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
+        """, (g_id, json.dumps(tendencies, ensure_ascii=False), json.dumps(tendencies, ensure_ascii=False)))
+        await db.commit()
+
+    await interaction.response.send_message(f"✅ 傾向詞庫已更新！目前包含：`{'、'.join(tendencies)}`", ephemeral=True)
+
+# -------------------- 指令：/審核通過（兩段式自動結算） --------------------
+@bot.tree.command(name="審核通過", description="【管理員專用】審核人設帖：第一次出導引，第二次同單結算金錢，嚴禁第三次")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(文章連結="人設單文章訊息或討論串連結", 角色名="對應審核的角色名稱")
+async def audit_pass_cmd(interaction: discord.Interaction, 文章連結: str, 角色名: str):
+    g_id = interaction.guild_id
+    link = 文章連結.strip()
+    c_name = 角色名.strip()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT audit_count FROM audit_logs WHERE guild_id = ? AND message_link = ?", (g_id, link)) as cur:
+            row = await cur.fetchone()
+
+        if row:
+            count = row[0]
+            if count >= 2:
+                await interaction.response.send_message("🚫 **該人設單已通過二次結算，不得重複執行第三次審核！**", ephemeral=True)
+                return
+
+            await interaction.response.defer()
+            link_match = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", link)
+            post_content = ""
+            if link_match:
+                c_id = int(link_match.group(1))
+                m_id = int(link_match.group(2)) if link_match.group(2) else None
+                try:
+                    ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
+                    if isinstance(ch, discord.Thread):
+                        first_msg = None
+                        async for msg in ch.history(limit=5, oldest_first=True):
+                            first_msg = msg
+                            break
+                        post_content = first_msg.content if first_msg else ch.name
+                    elif m_id:
+                        msg = await ch.fetch_message(m_id)
+                        post_content = msg.content
+                except Exception:
+                    pass
+
+            def extract_val(pattern):
+                m = re.search(pattern, post_content)
+                return int(m.group(1)) if m else 0
+
+            hot = extract_val(r"流量熱度[^\d]*(\d+)")
+            comm = extract_val(r"商業價值[^\d]*(\d+)")
+            passer = extract_val(r"路人緣[^\d]*(\d+)")
+            pr = extract_val(r"公關[^\d]*(\d+)")
+            infl = extract_val(r"影響指數[^\d]*(\d+)")
+            face = extract_val(r"容貌[^\d]*(\d+)")
+            iq = extract_val(r"才智[^\d]*(\d+)")
+            art = extract_val(r"個人才藝[^\d]*(\d+)")
+
+            tracks = sum([
+                extract_val(r"唱跳[^\d]*(\d+)"),
+                extract_val(r"演繹[^\d]*(\d+)"),
+                extract_val(r"主持[^\d]*(\d+)"),
+                extract_val(r"歌唱[^\d]*(\d+)"),
+                extract_val(r"綜藝[^\d]*(\d+)")
+            ])
+
+            total_money = (
+                hot * 80 +
+                comm * 100 +
+                passer * 30 +
+                pr * 20 +
+                infl * 50 +
+                face * 40 +
+                iq * 20 +
+                tracks * 30 +
+                art * 40
+            )
+
+            await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (total_money, g_id, c_name))
+            await db.execute("UPDATE audit_logs SET audit_count = 2 WHERE guild_id = ? AND message_link = ?", (g_id, link))
+            await db.commit()
+
+            await interaction.followup.send(
+                f"✅ **審核結算完成（第二次核定）**\n"
+                f"🎉 已成功為角色【{c_name}】核發初始金幣 **${total_money:,}** 直入銀行戶頭！\n"
+                f"（該單據已封存，無法再執行第三次結算）"
+            )
+        else:
+            await db.execute("INSERT INTO audit_logs (guild_id, message_link, char_name, audit_count) VALUES (?, ?, ?, 1)", (g_id, link, c_name))
+            await db.commit()
+
+            embed = discord.Embed(title=f"📜 人設單初步審核通過：【{c_name}】", color=0x3498DB)
+            embed.description = (
+                f"恭喜通過初步審核！請依照下列步驟盡速完成建檔：\n\n"
+                f"1️⃣ **建立檔案**：使用 `/檔案建立` 建立個人身分與標籤。\n"
+                f"2️⃣ **登記數值 & 作品**：使用 `/數值登記` 貼上人設單自動解析數值，並用 `/檔案更新` 補充歷練。\n"
+                f"3️⃣ **查看任務列表**：使用 `/任務` 查看全城看板，接取委託開啟生涯！\n\n"
+                f"*管理員提示：二次使用本指令即可自動套算數值並發放初始金幣。*"
+            )
+            await interaction.response.send_message(embed=embed)
+
+# -------------------- 查看系統：分頁檢視 --------------------
+class PagedDetailView(discord.ui.View):
+    def __init__(self, title: str, items: list, color: int):
+        super().__init__(timeout=120)
+        self.title = title
+        self.items = items
+        self.color = color
+        self.page = 0
+        self.max_page = max(0, (len(items) - 1) // 10)
+
+    def get_embed(self):
+        start = self.page * 10
+        end = start + 10
+        slice_items = self.items[start:end]
+
+        embed = discord.Embed(title=f"{self.title} (第 {self.page+1}/{self.max_page+1} 頁)", color=self.color)
+        embed.description = "\n".join(slice_items) if slice_items else "暫無相關資料紀錄。"
+        return embed
+
+    @discord.ui.button(label="⬅️ 上一頁", style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="➡️ 下一頁", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_page:
+            self.page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        else:
+            await interaction.response.defer()
+
+class ProfileMainView(discord.ui.View):
+    def __init__(self, char_name: str, guild_id: int):
+        super().__init__(timeout=180)
+        self.char_name = char_name
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="🏆 成就列表", style=discord.ButtonStyle.primary)
+    async def view_achieves(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
+                works = json.loads((await cur.fetchone())[0] or "[]")
+        items = [f"• 【{w.get('type', '歷練')}】《{w.get('title')}》— 擔任: {w.get('extra', '參演')}" for w in works if w.get("category") == "成就"]
+        p_view = PagedDetailView(f"🏆【{self.char_name}】歷練成就清單", items, 0xF1C40F)
+        await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
+
+    @discord.ui.button(label="🎖️ 榮譽列表", style=discord.ButtonStyle.success)
+    async def view_honors(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
+                works = json.loads((await cur.fetchone())[0] or "[]")
+        items = [f"• 🎖️《{w.get('title')}》— 備註: {w.get('extra', '榮譽認證')}" for w in works if w.get("category") == "榮譽"]
+        p_view = PagedDetailView(f"🎖️【{self.char_name}】獲頒榮譽與代言", items, 0x2ECC71)
+        await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
+
+    @discord.ui.button(label="💬 交際現況", style=discord.ButtonStyle.danger)
+    async def view_relationships(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT to_char, tendency, affection, status_desc FROM relationships WHERE guild_id = ? AND from_char = ?", (self.guild_id, self.char_name)) as cur:
+                rows = await cur.fetchall()
+        items = [f"• 對象：**{to_c}** ｜ 傾向：【{t}】 ｜ 羈絆：💖{aff} ｜ 狀況：`{desc}`" for to_c, t, aff, desc in rows]
+        p_view = PagedDetailView(f"💬【{self.char_name}】社交網絡與傾向", items, 0xE91E63)
+        await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
+
+@bot.tree.command(name="查看", description="調閱個人角色或 NPC 詳細檔案與資產面板")
+async def view_char_cmd(interaction: discord.Interaction, 名字: str):
+    g_id = interaction.guild_id
+    target_name = 名字.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT age, gender, job, faction, tags, relationship_status, cp_info, cash, bank, stats, rank, company_id, is_npc FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+            row = await cur.fetchone()
+
+        if not row:
+            await interaction.response.send_message(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+            return
+
+        age, gender, job, faction, tags, rel_status, cp_json, cash, bank, stats_json, rank_name, comp_id, is_npc_val = row
+        async with db.execute("SELECT asset_type, asset_name, price FROM personal_assets WHERE guild_id = ? AND owner_name = ?", (g_id, target_name)) as a_cur:
+            assets = await a_cur.fetchall()
+        async with db.execute("SELECT name, type_name FROM companies WHERE guild_id = ? AND creator_name = ?", (g_id, target_name)) as c_cur:
+            comps = await c_cur.fetchall()
+
+    cp_obj = json.loads(cp_json) if cp_json else {}
+    cp_text = f"💕 CP: **{cp_obj.get('target')}** ({cp_obj.get('relation')})" if cp_obj.get("target") else "無"
+
+    embed = discord.Embed(title=f"🪪【{target_name}】個人資料面板", color=0xE67E22)
+    embed.add_field(name="基本身分", value=f"• 年齡/性別: {age}歲 / {gender}\n• 身分/職業: {job}\n• 勢力: {faction}\n• 特質標籤: `{tags or '無'}`", inline=True)
+    embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
+    embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 現金: ${cash:,} ｜ 銀行: ${bank:,}", inline=False)
+
+    asset_lines = [f"• [{a[0]}] {a[1]} (${a[2]:,})" for a in assets]
+    if comps:
+        for c in comps: asset_lines.append(f"• [名下公司] {c[0]} ({c[1]})")
+    embed.add_field(name="🚗 房產、車輛與公司資產", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
+
+    stats = json.loads(stats_json) if stats_json else {}
+    stat_texts = [f"{k}: **{v}**" for k, v in stats.items()]
+    embed.add_field(name="📊 核心數值", value=" ｜ ".join(stat_texts[:10]) if stat_texts else "尚未登記任何數值", inline=False)
+
+    view = ProfileMainView(target_name, g_id)
+    await interaction.response.send_message(embed=embed, view=view)
+
+@bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 名冊大廳或個別檔案")
+@app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟全選單")
+async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
+    g_id = interaction.guild_id
+    if npc名稱:
+        await view_char_cmd(interaction, npc名稱)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name, age, gender, job FROM characters WHERE guild_id = ? AND is_npc = 1", (g_id,)) as cur:
+            all_npcs = await cur.fetchall()
+
+    if not all_npcs:
+        await interaction.response.send_message("📋 目前本伺服器尚未登記任何官方 NPC！", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="👥 流光城官方 NPC 名錄大廳", description="請點選下方選單調閱各 NPC 個人檔案：", color=0x9B59B6)
+    for npc in all_npcs:
+        embed.add_field(name=f"👤 {npc[0]} ({npc[1]}歲 / {npc[2]})", value=f"身分：{npc[3]}", inline=True)
+
+    class NPCDropdown(discord.ui.Select):
+        def __init__(self):
+            opts = [discord.SelectOption(label=n[0], description=f"{n[1]}歲 ｜ {n[2]} ｜ {n[3]}", emoji="👤") for n in all_npcs[:25]]
+            super().__init__(placeholder="點此選擇欲查看檔案的官方 NPC...", options=opts)
+
+        async def callback(self, inter: discord.Interaction):
+            await view_char_cmd(inter, self.values[0])
+
+    view = discord.ui.View()
+    view.add_item(NPCDropdown())
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+# -------------------- 指令：/數值登記 --------------------
+@bot.tree.command(name="數值登記", description="為角色或 NPC 登記/微調數值（支援一次多項調整）")
+@app_commands.choices(類別=[
+    app_commands.Choice(name="官方 NPC", value="官方npc"),
+    app_commands.Choice(name="玩家自設 NPC", value="玩家npc"),
+    app_commands.Choice(name="自身角色", value="角色")
+])
+@app_commands.describe(
+    名字="角色或 NPC 姓名",
+    數值調整串="一般調整用，例如: 容貌50、才智-10、商業價值100",
+    人設單連結="【限初次建檔填單用】貼上人設帖子/討論串連結自動爬取"
+)
+async def register_stats_multi(
+    interaction: discord.Interaction,
+    類別: app_commands.Choice[str],
+    名字: str,
+    數值調整串: str = None,
+    人設單連結: str = None
+):
+    g_id = interaction.guild_id
+    target_name = 名字.strip()
+    is_admin = interaction.user.guild_permissions.administrator
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, stats, is_npc FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+            row = await cur.fetchone()
+
+        if not row:
+            await interaction.response.send_message(f"❌ 查無【{target_name}】！", ephemeral=True)
+            return
+
+        u_id, stats_json, is_npc_val = row
+        if not is_admin and u_id != interaction.user.id:
+            await interaction.response.send_message("❌ 你無權操作此角色數值！", ephemeral=True)
+            return
+
+        char_stats = json.loads(stats_json) if stats_json else {}
+
+        if 人設單連結:
+            await interaction.response.defer(ephemeral=True)
+            link_match = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 人設單連結)
+            post_content = ""
+            if link_match:
+                c_id = int(link_match.group(1))
+                m_id = int(link_match.group(2)) if link_match.group(2) else None
+                try:
+                    ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
+                    if isinstance(ch, discord.Thread):
+                        first_msg = None
+                        async for msg in ch.history(limit=5, oldest_first=True):
+                            first_msg = msg
+                            break
+                        post_content = first_msg.content if first_msg else ch.name
+                    elif m_id:
+                        msg = await ch.fetch_message(m_id)
+                        post_content = msg.content
+                except Exception:
+                    pass
+
+            for k, v in re.findall(r"([^\d\s:：,，]+)\s*[:：]?\s*(\d+)", post_content):
+                if k not in ["流光幣", "現金", "金錢", "年齡", "順序"]:
+                    char_stats[k] = int(v)
+
+            await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(char_stats, ensure_ascii=False), g_id, target_name))
+            await db.commit()
+            await interaction.followup.send(f"🎉 已自人設單同步【{target_name}】的各項初始數值！", ephemeral=True)
+            return
+
+        if not 數值調整串:
+            await interaction.response.send_message("❌ 請填入【數值調整串】（例如：容貌50、才智-10）！", ephemeral=True)
+            return
+
+        changes = []
+        for part in re.split(r"[,，、\s]+", 數值調整串.strip()):
+            m = re.search(r"([^\d+-]+)([+-]?\d+)", part)
+            if m:
+                s_name = m.group(1).strip()
+                s_delta = int(m.group(2))
+                char_stats[s_name] = char_stats.get(s_name, 0) + s_delta
+                sign = "+" if s_delta >= 0 else ""
+                changes.append(f"{s_name} {sign}{s_delta}")
+
+        await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(char_stats, ensure_ascii=False), g_id, target_name))
+        await db.commit()
+
+    await check_and_update_rank(g_id, target_name, interaction.channel)
+    await interaction.response.send_message(f"✅ 【{target_name}】數值更新完畢：`{'、'.join(changes)}`！")
+
+# -------------------- 指令：/任務新增 與 /回報任務（含陣營抽成） --------------------
+@bot.tree.command(name="任務新增", description="【管理員專用】發布或修改任務（含成就/榮譽選填）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(操作=[
+    app_commands.Choice(name="新增任務", value="add"),
+    app_commands.Choice(name="修改既有任務", value="edit")
+])
+@app_commands.choices(選擇欄位=[
+    app_commands.Choice(name="新手任務", value="新手任務"),
+    app_commands.Choice(name="一般任務", value="一般任務"),
+    app_commands.Choice(name="限時任務", value="限時任務"),
+    app_commands.Choice(name="特殊任務", value="特殊任務"),
+])
+@app_commands.describe(
+    操作="選擇新增或修改任務內容",
+    選擇欄位="任務所屬分類",
+    任務名="任務名稱（玩家文章標題需包含此名稱）",
+    金錢獎勵="自動匯入銀行的金錢 (可填 0)",
+    數值獎勵="【選填】獲得的數值 (例如: 容貌+10、商業價值+20)",
+    成就="【選填】完成時賦予的成就名稱或標籤",
+    榮譽="【選填】完成時賦予的榮譽稱號或等級（例如：奢華、傳說、S級）",
+    限制條件="【選填】接取門檻（例如：地位限一線、性別限女、勢力限指定組織）",
+    獎勵道具名="自動送入背包的道具名 (選填)",
+    獎勵道具數量="自動送入背包的道具數量 (預設 1)",
+    限時時間="僅限時任務需填寫，格式：YYYY/M/D HH:MM～YYYY/M/D HH:MM",
+    回報頻道="【選填】限定回報的文字頻道/討論串/論壇，留空則全服任意頻道可回報"
+)
+async def add_quest_cmd(
+    interaction: discord.Interaction,
+    操作: app_commands.Choice[str],
+    選擇欄位: app_commands.Choice[str],
+    任務名: str,
+    金錢獎勵: int = 0,
+    數值獎勵: str = "",
+    成就: str = "",
+    榮譽: str = "",
+    限制條件: str = "",
+    獎勵道具名: str = None,
+    獎勵道具數量: int = 1,
+    限時時間: str = None,
+    回報頻道: discord.abc.GuildChannel = None
+):
+    g_id = interaction.guild_id
+    category = 選擇欄位.value
+    time_limit_str = 限時時間.strip() if (category == "限時任務" and 限時時間) else ""
+    items = [{"name": 獎勵道具名.strip(), "amount": 獎勵道具數量}] if 獎勵道具名 else []
+    rep_ch_id = 回報頻道.id if 回報頻道 else 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id FROM quests WHERE guild_id = ? AND title = ?", (g_id, 任務名.strip())) as cur:
+            exists = await cur.fetchone()
+
+        if 操作.value == "add":
+            if exists:
+                await interaction.response.send_message(f"❌ 任務名稱 `{任務名}` 已經存在！", ephemeral=True)
+                return
+            await db.execute("""
+                INSERT INTO quests (guild_id, category, title, reward_cash, reward_items, reward_stats, achievement, honor, requirement, time_limit, report_channel_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (g_id, category, 任務名.strip(), 金錢獎勵, json.dumps(items, ensure_ascii=False), 數值獎勵.strip(), 成就.strip(), 榮譽.strip(), 限制條件.strip(), time_limit_str, rep_ch_id))
+            op_label = "新增"
+        else:
+            if not exists:
+                await interaction.response.send_message(f"❌ 找不到欲修改的任務 `{任務名}`！", ephemeral=True)
+                return
+            await db.execute("""
+                UPDATE quests SET category = ?, reward_cash = ?, reward_items = ?, reward_stats = ?, achievement = ?, honor = ?, requirement = ?, time_limit = ?, report_channel_id = ?
+                WHERE guild_id = ? AND title = ?
+            """, (category, 金錢獎勵, json.dumps(items, ensure_ascii=False), 數值獎勵.strip(), 成就.strip(), 榮譽.strip(), 限制條件.strip(), time_limit_str, rep_ch_id, g_id, 任務名.strip()))
+            op_label = "修改"
+
+        await db.commit()
+
+    rewards_list = []
+    if 金錢獎勵 > 0: rewards_list.append(f"${金錢獎勵:,}")
+    if 數值獎勵: rewards_list.append(f"{數值獎勵}")
+    if 獎勵道具名: rewards_list.append(f"{獎勵道具名}×{獎勵道具數量}")
+    reward_summary = " ｜ ".join(rewards_list) if rewards_list else "無實質物資獎勵"
+
+    achieve_desc = f"\n🏆 成就獎勵：【{成就}】" if 成就 else ""
+    honor_desc = f"\n🎖️ 榮譽稱號：【{榮譽}】" if 榮譽 else ""
+    req_desc = f"\n🚫 接取限制門檻：【{限制條件}】" if 限制條件 else ""
+    ch_desc = f"\n📍 限定回報區：{回報頻道.mention}" if 回報頻道 else "\n📍 限定回報區：全伺服器皆可"
+
+    await interaction.response.send_message(f"✅ 成功{op_label}任務！\n📌 分類：【{category}】\n🏷️ 任務名：**{任務名}**\n🎁 獎勵：{reward_summary}{achieve_desc}{honor_desc}{req_desc}{ch_desc}")
+
+@bot.tree.command(name="回報任務", description="回報任務文章連結，領取獎勵（自動完成陣營抽成並檢測地位）")
+@app_commands.describe(角色名="回報任務的角色名稱", 文章連結="你所發表文章的帖子/討論串或訊息連結")
+async def report_quest(interaction: discord.Interaction, 角色名: str, 文章連結: str):
+    g_id = interaction.guild_id
+    await interaction.response.defer(ephemeral=False)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, gender, faction, stats, rank, works FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                await interaction.followup.send(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
+                return
+            u_id, gender, faction, stats_json, rank_name, works_json = row
+            if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send("❌ 你只能為自己持有的角色回報任務！", ephemeral=True)
+                return
+
+    link_pattern = r"channels/\d+/(\d+)(?:/(\d+))?"
+    match = re.search(link_pattern, 文章連結)
+    if not match:
+        await interaction.followup.send("❌ 無法識別文章連結格式！", ephemeral=True)
+        return
+
+    target_channel_id = int(match.group(1))
+    target_msg_id = int(match.group(2)) if match.group(2) else None
+    target_title = ""
+
+    try:
+        channel_or_thread = interaction.client.get_channel(target_channel_id) or await interaction.client.fetch_channel(target_channel_id)
+        if isinstance(channel_or_thread, discord.Thread):
+            target_title = channel_or_thread.name
+        elif target_msg_id:
+            msg = await channel_or_thread.fetch_message(target_msg_id)
+            target_title = msg.content
+    except Exception:
+        pass
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT title, reward_cash, reward_items, reward_stats, achievement, honor, requirement, time_limit, report_channel_id FROM quests WHERE guild_id = ?", (g_id,)) as cur:
+            all_quests = await cur.fetchall()
+
+        matched_quest = None
+        for q in all_quests:
+            if q[0] in target_title:
+                matched_quest = q
+                break
+
+        if not matched_quest:
+            await interaction.followup.send(f"❌ 驗證失敗：無法在文章標題中匹配到正確的任務名稱！", ephemeral=True)
+            return
+
+        q_title, r_cash, r_items_json, r_stats, achieve_val, honor_val, requirement, time_limit, req_channel_id = matched_quest
+
+        if req_channel_id and req_channel_id > 0:
+            current_ch = interaction.channel
+            is_correct = (current_ch.id == req_channel_id) or (hasattr(current_ch, "parent_id") and current_ch.parent_id == req_channel_id)
+            if not is_correct:
+                await interaction.followup.send(f"❌ 此任務限定在指定的專屬回報區操作！請前往：<#{req_channel_id}>", ephemeral=True)
+                return
+
+        char_stats = json.loads(stats_json) if stats_json else {}
+        if requirement:
+            if "地位" in requirement and rank_name not in requirement:
+                await interaction.followup.send(f"❌ 資格不符：此任務要求【{requirement}】，你當前地位為【{rank_name}】！", ephemeral=True)
+                return
+            if "性別" in requirement and gender not in requirement:
+                await interaction.followup.send(f"❌ 資格不符：此任務限制性別！", ephemeral=True)
+                return
+            if "勢力" in requirement and faction not in requirement:
+                await interaction.followup.send(f"❌ 資格不符：此任務限制指定勢力參與！", ephemeral=True)
+                return
+
+        async with db.execute("SELECT 1 FROM quest_completions WHERE guild_id = ? AND char_name = ? AND quest_title = ?", (g_id, 角色名, q_title)) as cur:
+            if await cur.fetchone():
+                await interaction.followup.send(f"⚠️ 角色 **{角色名}** 已經完成過任務【{q_title}】，不可重複回報！", ephemeral=True)
+                return
+
+        # 1. 獎勵金幣先全額匯入銀行
+        if r_cash > 0:
+            await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (r_cash, g_id, 角色名))
+
+        items = json.loads(r_items_json) if r_items_json else []
+        for it in items:
+            it_name, it_amt = it.get("name"), it.get("amount", 1)
+            async with db.execute("SELECT id FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ? AND giver = '任務獎勵'", (g_id, 角色名, it_name)) as cur:
+                inv_row = await cur.fetchone()
+                if inv_row:
+                    await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (it_amt, inv_row[0]))
+                else:
+                    await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, ?, '任務獎勵')", (g_id, 角色名, it_name, it_amt))
+
+        works = json.loads(works_json) if works_json else []
+        if achieve_val:
+            works.append({"category": "成就", "title": q_title, "extra": achieve_val})
+        if honor_val:
+            works.append({"category": "榮譽", "title": q_title, "extra": honor_val})
+        if not achieve_val and not honor_val:
+            works.append({"category": "成就", "title": q_title, "extra": "一般完成"})
+
+        await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), g_id, 角色名))
+        await db.execute("INSERT INTO quest_completions (guild_id, char_name, quest_title, completed_at) VALUES (?, ?, ?, ?)", (g_id, 角色名, q_title, time.time()))
+        await db.commit()
+
+    # 2. 自動扣繳陣營抽成（每個作品/任務只會扣繳一次）
+    tax_info = await process_faction_tax(g_id, 角色名, q_title, r_cash, interaction.channel)
+
+    # 3. 自動觸發地位晉升檢測
+    await check_and_update_rank(g_id, 角色名, interaction.channel)
+
+    earned = []
+    if r_cash > 0: earned.append(f"$ {r_cash:,}")
+    if r_stats: earned.append(f"+ 數值{r_stats}")
+    if achieve_val: earned.append(f"獲得成就【{achieve_val}】")
+    if honor_val: earned.append(f"獲得榮譽【{honor_val}】")
+    earned_str = " ｜ ".join(earned)
+
+    await interaction.followup.send(f"‼️任務確認完成\n獎勵：{earned_str}{tax_info}\n恭喜 {interaction.user.mention} 的【{角色名}】完成任務《{q_title}》！✅")
+
+# -------------------- 指令：/任務看板 --------------------
+@bot.tree.command(name="任務", description="查看角色當前完成與未完成的任務看板")
+async def view_quests(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
+            if not await cur.fetchone():
+                await interaction.response.send_message(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
+                return
+
+        async with db.execute("SELECT category, title, reward_cash, reward_stats, achievement, honor, requirement, time_limit, report_channel_id FROM quests WHERE guild_id = ? ORDER BY id ASC", (g_id,)) as cur:
+            all_quests = await cur.fetchall()
+
+        async with db.execute("SELECT quest_title FROM quest_completions WHERE guild_id = ? AND char_name = ?", (g_id, 角色名)) as cur:
+            done_titles = {row[0] for row in await cur.fetchall()}
+
+    if not all_quests:
+        await interaction.response.send_message("📋 目前本伺服器尚未發布任何任務！", ephemeral=True)
+        return
+
+    categories = ["新手任務", "一般任務", "限時任務", "特殊任務"]
+    embed = discord.Embed(title=f"📜【{角色名}】的任務清單看板", color=0xF1C40F)
+
+    for cat in categories:
+        cat_quests = [q for q in all_quests if q[0] == cat]
+        if not cat_quests:
+            embed.add_field(name=f"📌 {cat}欄", value="暫無任務", inline=False)
+            continue
+
+        lines = []
+        for _, title, r_cash, r_stats, achieve, honor, req, time_limit, r_ch_id in cat_quests:
+            status = "✅" if title in done_titles else "❌"
+            limit_str = f" ⏳ `{time_limit}`" if time_limit else ""
+            ch_str = f" 📍 <#{r_ch_id}>" if r_ch_id > 0 else ""
+            achieve_str = f" 🏆`{achieve}`" if achieve else ""
+            honor_str = f" 🎖️`{honor}`" if honor else ""
+            req_str = f" 🚫 限`{req}`" if req else ""
+
+            rew_parts = []
+            if r_cash > 0: rew_parts.append(f"${r_cash:,}")
+            if r_stats: rew_parts.append(f"{r_stats}")
+            rew_str = " ｜ ".join(rew_parts) if rew_parts else "履歷證明"
+
+            lines.append(f"• **{title}**{achieve_str}{honor_str}{req_str}{limit_str}{ch_str}\n  └ 獎勵：{rew_str} ［{status}］")
+
+        embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# -------------------- 指令：/陣營 與 /陣營管理 --------------------
+@bot.tree.command(name="陣營", description="陣營主控台：捐獻、查看金庫排名、購買商城全體加成或退出")
+@app_commands.choices(操作=[
+    app_commands.Choice(name="查看現況與領週禮包", value="view"),
+    app_commands.Choice(name="捐獻資金", value="donate"),
+    app_commands.Choice(name="購買陣營商城Buff(正副負責人限定)", value="buy"),
+    app_commands.Choice(name="退出陣營(需付費)", value="exit"),
+    app_commands.Choice(name="加入陣營", value="join")
+])
+@app_commands.describe(操作="選擇要執行的動作", 角色名="欲操作的角色名稱", 金額="捐獻或購買時填寫的金額", 陣營名稱="指定陣營名")
+async def faction_cmd(
+    interaction: discord.Interaction,
+    操作: app_commands.Choice[str],
+    角色名: str,
+    金額: int = 0,
+    陣營名稱: str = None
+):
+    g_id = interaction.guild_id
+    c_name = 角色名.strip()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT faction, cash, bank FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as cur:
+            char_row = await cur.fetchone()
+            if not char_row:
+                await interaction.response.send_message(f"❌ 查無角色【{c_name}】！", ephemeral=True)
+                return
+            my_faction, cash, bank = char_row
+
+    op = 操作.value
+
+    if op == "view":
+        if my_faction == "無":
+            await interaction.response.send_message(f"ℹ️ 【{c_name}】目前不屬於任何陣營，請先使用加入陣營！", ephemeral=True)
+            return
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT treasury, desc, weekly_gift FROM factions WHERE guild_id = ? AND name = ?", (g_id, my_faction)) as cur:
+                f_info = await cur.fetchone()
+            async with db.execute("SELECT char_name, contribution FROM faction_members WHERE guild_id = ? AND faction_name = ? ORDER BY contribution DESC LIMIT 5", (g_id, my_faction)) as cur:
+                rankings = await cur.fetchall()
+
+        treasury, desc, weekly_gift = f_info if f_info else (0, "無簡介", "{}")
+        embed = discord.Embed(title=f"🚩 陣營面板：【{my_faction}】", color=0xE74C3C)
+        embed.description = f"{desc}\n\n💰 **陣營金庫公款**：${treasury:,}"
+
+        rank_lines = [f"`#{i+1}` **{r[0]}** ｜ 貢獻度: {r[1]:,}" for i, r in enumerate(rankings)]
+        embed.add_field(name="🏆 陣營內部貢獻前五名 (正副負責人擁商城權限)", value="\n".join(rank_lines) if rank_lines else "暫無貢獻紀錄", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    elif op == "donate":
+        if 金額 <= 0:
+            await interaction.response.send_message("❌ 捐獻金額需大於 0！", ephemeral=True)
+            return
+        if cash < 金額:
+            await interaction.response.send_message(f"❌ 現金不足！目前手頭現金僅有 ${cash:,}。", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (金額, g_id, c_name))
+            await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (金額, g_id, my_faction))
+            await db.execute("""
+                INSERT INTO faction_members (guild_id, faction_name, char_name, contribution)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
+            """, (g_id, my_faction, c_name, 金額, 金額))
+            await db.commit()
+
+        await interaction.response.send_message(f"🤝 **{c_name}** 為陣營【{my_faction}】成功捐獻 **${金額:,}**！貢獻度同步增加。")
+
+    elif op == "exit":
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT exit_fee FROM factions WHERE guild_id = ? AND name = ?", (g_id, my_faction)) as cur:
+                f_row = await cur.fetchone()
+                exit_fee = f_row[0] if f_row else 5000
+
+            if cash < exit_fee:
+                await interaction.response.send_message(f"❌ 現金不足以支付退出罰金！需要手頭現金 **${exit_fee:,}**。", ephemeral=True)
+                return
+
+            await db.execute("UPDATE characters SET cash = cash - ?, faction = '無' WHERE guild_id = ? AND name = ?", (exit_fee, g_id, c_name))
+            await db.execute("DELETE FROM faction_members WHERE guild_id = ? AND char_name = ?", (g_id, c_name))
+            await db.commit()
+
+        await interaction.response.send_message(f"🚪 **{c_name}** 支付了違約賠償金 **${exit_fee:,}**，正式退出陣營【{my_faction}】！")
+
+    elif op == "join":
+        if not 陣營名稱:
+            await interaction.response.send_message("❌ 請填寫欲加入的【陣營名稱】！", ephemeral=True)
+            return
+        t_faction = 陣營名稱.strip()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM factions WHERE guild_id = ? AND name = ?", (g_id, t_faction)) as cur:
+                if not await cur.fetchone():
+                    await interaction.response.send_message(f"❌ 查無陣營【{t_faction}】！", ephemeral=True)
+                    return
+            await db.execute("UPDATE characters SET faction = ? WHERE guild_id = ? AND name = ?", (t_faction, g_id, c_name))
+            await db.commit()
+        await interaction.response.send_message(f"🚩 恭喜 **{c_name}** 正式加入陣營【{t_faction}】！")
+
+@bot.tree.command(name="陣營管理", description="【管理員專用】建立全新陣營或向陣營全體發放獎勵")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(操作=[
+    app_commands.Choice(name="建立新陣營", value="create"),
+    app_commands.Choice(name="陣營榜首犒賞", value="reward_top")
+])
+@app_commands.describe(陣營名稱="陣營名稱", 簡介="理念介紹", 抽成比例="0.1 代表 10%", 退出費用="脫離違約金")
+async def manage_faction_admin(
+    interaction: discord.Interaction,
+    操作: app_commands.Choice[str],
+    陣營名稱: str,
+    簡介: str = "流光城自治勢力",
+    抽成比例: float = 0.1,
+    退出費用: int = 5000
+):
+    g_id = interaction.guild_id
+    f_name = 陣營名稱.strip()
+
+    if 操作.value == "create":
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                INSERT INTO factions (guild_id, name, desc, tax_rate, exit_fee)
+                VALUES (?, ?, ?, ?, ?)
+            """, (g_id, f_name, 簡介.strip(), 抽成比例, 退出費用))
+            await db.commit()
+        await interaction.response.send_message(f"🚩 成功註冊勢力陣營：【**{f_name}**】（退出違約金：${退出費用:,}，抽成率：{int(抽成比例*100)}%）！")
+    else:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE characters SET bank = bank + 50000 WHERE guild_id = ? AND faction = ?", (g_id, f_name))
+            await db.commit()
+        await interaction.response.send_message(f"🏆 管理員已下發榮耀犒賞！【{f_name}】全體陣營成員銀行各入帳 **$50,000**！")
+
+@bot.tree.command(name="金主降臨", description="【系統/管理員專用】為指定陣營金庫無償注入巨額公款")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(陣營名稱="目標陣營", 金額="注入的金庫公款金額")
+async def patron_sponsor(interaction: discord.Interaction, 陣營名稱: str, 金額: int):
+    g_id = interaction.guild_id
+    f_name = 陣營名稱.strip()
+    if 金額 <= 0:
+        await interaction.response.send_message("❌ 金額必須大於 0！", ephemeral=True)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (金額, g_id, f_name))
+        await db.commit()
+
+    await interaction.response.send_message(f"🌟 金主天降！神祕贊助商向【{f_name}】金庫無償注入公款：**+${金額:,}**！")
+
+@bot.tree.command(name="陣營排行", description="查看全伺服器各大陣營金庫與實力總積分排行榜")
+async def faction_leaderboard_cmd(interaction: discord.Interaction):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name, treasury FROM factions WHERE guild_id = ? ORDER BY treasury DESC", (g_id,)) as cur:
+            rows = await cur.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("📋 尚未註冊任何陣營！", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🏆 全服各大勢力陣營積分排行", color=0xF1C40F)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (name, treasury) in enumerate(rows):
+        prefix = medals[i] if i < 3 else f"`#{i+1}`"
+        points = treasury // 10
+        lines.append(f"{prefix} **{name}** ｜ 金庫：${treasury:,} ｜ 總積分：**{points:,}** 分")
+
+    embed.description = "\n".join(lines)
+    embed.set_footer(text="折算規則：每 10 元公款折合 1 點陣營榮譽積分。")
+    await interaction.response.send_message(embed=embed)
+
+# -------------------- 指令：金融流通與薪水 --------------------
+@bot.tree.command(name="薪水", description="【管理員專用】發放薪水直接匯入角色或 NPC 的手頭現金")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(名字="角色或官方 NPC 名稱", 金額="發放的薪水金額 (純整數)")
+async def salary_cmd(interaction: discord.Interaction, 名字: str, 金額: int):
+    g_id = interaction.guild_id
+    if 金額 <= 0:
+        await interaction.response.send_message("❌ 金額必須大於 0！", ephemeral=True)
+        return
+
+    target_name = 名字.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+            if not await cur.fetchone():
+                await interaction.response.send_message(f"❌ 查無名為 `{target_name}` 的角色或 NPC！", ephemeral=True)
+                return
+
+        await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, g_id, target_name))
+        await db.commit()
+
+    await interaction.response.send_message(f"💵 薪水 **${金額:,}** 已成功發放並入帳至【**{target_name}**】的手頭現金！")
+
+@bot.tree.command(name="轉錢", description="將手頭現金轉帳給其他角色或官方 NPC")
+@app_commands.describe(轉出者="發起轉帳的名字 (你的角色)", 接收者="收款人的名字", 金額="轉帳金額")
+async def transfer(interaction: discord.Interaction, 轉出者: str, 接收者: str, 金額: int):
+    g_id = interaction.guild_id
+    if 金額 <= 0:
+        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
+        return
+
+    sender = 轉出者.strip()
+    receiver = 接收者.strip()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, cash FROM characters WHERE guild_id = ? AND name = ?", (g_id, sender)) as cur:
+            s_row = await cur.fetchone()
+            if not s_row:
+                await interaction.response.send_message(f"❌ 找不到轉出角色【{sender}】！", ephemeral=True)
+                return
+            if s_row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ 你只能操作自己持有的角色進行轉帳！", ephemeral=True)
+                return
+            if s_row[1] < 金額:
+                await interaction.response.send_message(f"❌ 現金不足！目前手頭僅有 ${s_row[1]:,}。", ephemeral=True)
+                return
+
+        async with db.execute("SELECT 1 FROM characters WHERE guild_id = ? AND name = ?", (g_id, receiver)) as cur:
+            if not await cur.fetchone():
+                await interaction.response.send_message(f"❌ 查無接收對象【{receiver}】！", ephemeral=True)
+                return
+
+        await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (金額, g_id, sender))
+        await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, g_id, receiver))
+        await db.commit()
+
+    await interaction.response.send_message(f"💸 **{sender}** 成功轉帳 **${金額:,}** 給 **{receiver}**！")
+
+@bot.tree.command(name="存錢", description="將手頭現金存入銀行")
+async def deposit(interaction: discord.Interaction, 名字: str, 金額: int):
+    g_id = interaction.guild_id
+    if 金額 <= 0:
+        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
+        return
+
+    target = 名字.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, cash FROM characters WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                await interaction.response.send_message(f"❌ 找不到角色【{target}】！", ephemeral=True)
+                return
+            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ 你只能為自己的角色存錢！", ephemeral=True)
+                return
+            if row[1] < 金額:
+                await interaction.response.send_message(f"❌ 現金不足！目前僅有 ${row[1]:,}。", ephemeral=True)
+                return
+
+        await db.execute("UPDATE characters SET cash = cash - ?, bank = bank + ? WHERE guild_id = ? AND name = ?", (金額, 金額, g_id, target))
+        await db.commit()
+
+    await interaction.response.send_message(f"🏦 **{target}** 成功將 **${金額:,}** 存入銀行帳戶！")
+
+@bot.tree.command(name="取錢", description="從銀行提取現金")
+async def withdraw(interaction: discord.Interaction, 名字: str, 金額: int):
+    g_id = interaction.guild_id
+    if 金額 <= 0:
+        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
+        return
+
+    target = 名字.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, bank FROM characters WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                await interaction.response.send_message(f"❌ 找不到角色【{target}】！", ephemeral=True)
+                return
+            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ 你只能為自己的角色提款！", ephemeral=True)
+                return
+            if row[1] < 金額:
+                await interaction.response.send_message(f"❌ 存款不足！當前存款僅有 ${row[1]:,}。", ephemeral=True)
+                return
+
+        await db.execute("UPDATE characters SET bank = bank - ?, cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, 金額, g_id, target))
+        await db.commit()
+
+    await interaction.response.send_message(f"💵 **{target}** 成功從銀行提領 **${金額:,}** 現金！")
+
+# -------------------- 指令：資產、商城、背包 --------------------
+@bot.tree.command(name="資產系統", description="購買車輛、房產或申請創立/加入公司")
+async def asset_system(interaction: discord.Interaction):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'hide_company'", (g_id,)) as cur:
+            row = await cur.fetchone()
+            hide_comp = row and row[0] == "1"
+
+    embed = discord.Embed(title="🏙️ 流光城資產與產權管理中心", description="請選擇想操作的項目：", color=0x34495E)
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="🚗 購置車輛", style=discord.ButtonStyle.primary))
+    view.add_item(discord.ui.Button(label="🏠 置辦房產", style=discord.ButtonStyle.success))
+
+    if not hide_comp:
+        btn_create_comp = discord.ui.Button(label="🏗️ 創建公司", style=discord.ButtonStyle.danger)
+
+        async def create_comp_cb(inter: discord.Interaction):
+            class CreateCompanyModal(discord.ui.Modal, title="創立全新公司/工作室"):
+                comp_name = discord.ui.TextInput(label="公司名稱")
+                purpose = discord.ui.TextInput(label="用途宗旨", placeholder="例如: 影視製作、藝人經紀")
+                comp_type = discord.ui.TextInput(label="類型 (個人工作室/影業/經紀公司等)")
+                structure = discord.ui.TextInput(label="有限公司/股份有限公司 (填: 1人 或 2人以上)")
+                capital_and_partners = discord.ui.TextInput(
+                    label="出資額與合夥人",
+                    placeholder="獨資填金額(低消10萬)；多人填: 金額 @合夥人 (每人低消5萬)",
+                    style=discord.TextStyle.paragraph
+                )
+
+                async def on_submit(m_self, m_inter: discord.Interaction):
+                    c_name = m_self.comp_name.value.strip()
+                    s_type = m_self.structure.value.strip()
+                    raw_cap = m_self.capital_and_partners.value.strip()
+
+                    nums = [int(n) for n in re.findall(r"\d+", raw_cap)]
+                    if not nums:
+                        await m_inter.response.send_message("❌ 請填寫出資金額！", ephemeral=True)
+                        return
+
+                    my_inv = nums[0]
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        async with db.execute("SELECT cash, bank FROM characters WHERE guild_id = ? AND user_id = ?", (g_id, m_inter.user.id)) as cur:
+                            u_char = await cur.fetchone()
+                            if not u_char:
+                                await m_inter.response.send_message("❌ 你尚未建立個人角色！", ephemeral=True)
+                                return
+                            my_total_money = u_char[0] + u_char[1]
+
+                        if "1人" in s_type or "有限" in s_type:
+                            if my_inv < 100000:
+                                await m_inter.response.send_message("❌ 個人獨資最低出資金額為 **$100,000**！", ephemeral=True)
+                                return
+                            if (my_total_money - my_inv) < (my_inv / 2):
+                                await m_inter.response.send_message("❌ 資產門檻不足！創立後剩餘錢款必須達出資金額的 **1/2**！", ephemeral=True)
+                                return
+
+                            await db.execute("""
+                                INSERT INTO companies (guild_id, name, purpose, type_name, structure, creator_name, total_capital, balance)
+                                VALUES (?, ?, ?, ?, '有限公司', ?, ?, ?)
+                            """, (g_id, c_name, m_self.purpose.value.strip(), m_self.comp_type.value.strip(), m_inter.user.display_name, my_inv, my_inv))
+                            await db.execute("UPDATE characters SET bank = bank - ? WHERE guild_id = ? AND user_id = ?", (my_inv, g_id, m_inter.user.id))
+                            await db.commit()
+                            await m_inter.response.send_message(f"🎉 恭喜！有限公司【**{c_name}**】成功註冊成立，資本額 **${my_inv:,}**！")
+                        else:
+                            if my_inv < 50000:
+                                await m_inter.response.send_message("❌ 多人合夥每人最低出資金額為 **$50,000**！", ephemeral=True)
+                                return
+                            await m_inter.response.send_message(f"📩 多人股份有限公司【{c_name}】申請已送出！", ephemeral=True)
+
+            await inter.response.send_modal(CreateCompanyModal())
+
+        btn_create_comp.callback = create_comp_cb
+        view.add_item(discord.ui.Button(label="🏢 加入公司", style=discord.ButtonStyle.secondary))
+        view.add_item(btn_create_comp)
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name="資產系統更新", description="【管理員專用】管理可創建公司類型與功能隱藏")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(隱藏公司系統=[
+    app_commands.Choice(name="是（隱藏公司功能）", value="1"),
+    app_commands.Choice(name="否（開放公司體系）", value="0")
+])
+async def asset_system_update(interaction: discord.Interaction, 隱藏公司系統: app_commands.Choice[str]):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'hide_company', ?)
+            ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
+        """, (g_id, 隱藏公司系統.value, 隱藏公司系統.value))
+        await db.commit()
+
+    state_str = "已隱藏" if 隱藏公司系統.value == "1" else "已開放"
+    await interaction.response.send_message(f"⚙️ 公司系統顯示狀態已設定為：**{state_str}**！", ephemeral=True)
+
+@bot.tree.command(name="商城", description="進入商城選單購買商品或票券")
+async def shop(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
+            if not await cur.fetchone():
+                await interaction.response.send_message("❌ 查無此角色檔案！", ephemeral=True)
+                return
+
+        async with db.execute("SELECT DISTINCT shop_name FROM shop_items WHERE guild_id = ?", (g_id,)) as cur:
+            shops = [row[0] for row in await cur.fetchall()]
+
+    for default_s in ["票務系統", "二手"]:
+        if default_s not in shops:
+            shops.append(default_s)
+
+    class ShopSelectView(discord.ui.View):
+        def __init__(self, cname, s_list):
+            super().__init__(timeout=120)
+            for shop in s_list:
+                button = discord.ui.Button(label=shop, style=discord.ButtonStyle.primary)
+                button.callback = self.make_callback(shop, cname)
+                self.add_item(button)
+
+        def make_callback(self, shop_name, cname):
+            async def callback(inter: discord.Interaction):
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT id, name, price, description, stat_bonus, seller, target_role_id FROM shop_items WHERE guild_id = ? AND shop_name = ?", (g_id, shop_name)) as cur:
+                        items = await cur.fetchall()
+
+                if not items:
+                    await inter.response.send_message(f"🏪 **{shop_name}** 目前無任何商品。", ephemeral=True)
+                    return
+
+                embed = discord.Embed(title=f"🏪 商城 — 【{shop_name}】", color=0xD4AF37)
+                for item in items[:15]:
+                    embed.add_field(name=f"📦 {item[1]} — ${item[2]:,}", value=f"簡介: {item[3]}\n效果: {item[4]}", inline=False)
+                await inter.response.send_message(embed=embed, ephemeral=True)
+            return callback
+
+    await interaction.response.send_message(f"🏬 請選擇想進入的商城專區：", view=ShopSelectView(角色名, shops), ephemeral=True)
+
+@bot.tree.command(name="售物", description="將擁有物品放上［二手］商城販售")
+async def sell_item(interaction: discord.Interaction, 角色名: str, 物品名: str, 價格: int):
+    g_id = interaction.guild_id
+    if 價格 <= 0:
+        await interaction.response.send_message("❌ 販售價格必須大於 0！", ephemeral=True)
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, 角色名, 物品名)) as cur:
+            inv = await cur.fetchone()
+            if not inv or inv[1] <= 0:
+                await interaction.response.send_message("❌ 背包中查無此物品！", ephemeral=True)
+                return
+
+        if inv[1] == 1:
+            await db.execute("DELETE FROM inventory WHERE id = ?", (inv[0],))
+        else:
+            await db.execute("UPDATE inventory SET amount = amount - 1 WHERE id = ?", (inv[0],))
+
+        await db.execute("""
+            INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, target_role_id, seller)
+            VALUES (?, '二手', ?, ?, '玩家自售物品', '無加成', 0, 1, 0, ?)
+        """, (g_id, 物品名, 價格, 角色名))
+        await db.commit()
+
+    await interaction.response.send_message(f"🏷️ 已將 **{物品名}** 上架至【二手】商城，定價為 **${價格:,}**！")
+
+@bot.tree.command(name="背包", description="查看角色背包物品與來源")
+async def inventory(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT item_name, amount, giver FROM inventory WHERE guild_id = ? AND owner_name = ?", (g_id, 角色名)) as cur:
+            items = await cur.fetchall()
+
+    if not items:
+        await interaction.response.send_message(f"🎒 **{角色名}** 的背包目前沒有物品。", ephemeral=True)
+        return
+
+    embed = discord.Embed(title=f"🎒【{角色名}】的背包清單", color=0x3498DB)
+    for name, amt, giver in items:
+        embed.add_field(name=f"📦 {name} × {amt}", value=f"來源/贈予人: {giver}", inline=True)
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="返回原本地圖", description="主動結束地圖旅行並收回身分組（免除遣返懲罰）")
+async def return_home(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, role_id FROM active_tickets WHERE guild_id = ? AND char_name = ?", (g_id, 角色名)) as cur:
+            ticket = await cur.fetchone()
+            if not ticket:
+                await interaction.response.send_message(f"ℹ️ 角色 **{角色名}** 目前並無啟用中的外地簽證或門票身分組！", ephemeral=True)
+                return
+
+            t_id, role_id = ticket
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await interaction.user.remove_roles(role, reason="玩家主動返回原本地圖")
+                except Exception:
+                    pass
+
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (t_id,))
+            await db.commit()
+
+    await interaction.response.send_message(f"🏠 **{角色名}** 已順利返回原本地圖！已安全繳回門票身分組，無任何懲罰。")
+
+# -------------------- 指令：地位等級限制與排行 --------------------
 @bot.tree.command(name="地位等級限制", description="【管理員專用】設定、新增或修改全城地位晉級標準")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(操作模式=[
@@ -823,718 +2209,152 @@ async def rank_setting_cmd(
             f"• 席位名額：`{parsed_slots if parsed_slots > 0 else '不限'}`"
         )
 
-# -------------------- 指令：/檔案總覽（管理員專用） --------------------
-class OverviewSelect(discord.ui.Select):
-    def __init__(self, entities: list, guild_id: int):
+# -------------------- 指令：/排行查詢 --------------------
+def eval_stat_formula(formula: str, stats: dict) -> int:
+    expr = formula
+    sorted_keys = sorted(stats.keys(), key=len, reverse=True)
+    for k in sorted_keys:
+        if k in expr:
+            expr = expr.replace(k, str(stats.get(k, 0)))
+    expr = re.sub(r"[\u4e00-\u9fa5]+", "0", expr)
+    clean_expr = re.sub(r"[^0-9+\-*/().\s]", "", expr)
+    try:
+        val = eval(clean_expr, {"__builtins__": None}, {})
+        return int(val)
+    except Exception:
+        return 0
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, target_char: str = None, guild_id: int = None):
+        super().__init__(timeout=180)
+        self.target_char = target_char
         self.guild_id = guild_id
-        opts = [
-            discord.SelectOption(
-                label=f"{'[NPC] ' if ent[2] else ''}{ent[0]}",
-                description=f"地位: {ent[1]} ｜ 現金: ${ent[3]:,} ｜ 銀行: ${ent[4]:,}",
-                emoji="🎭" if ent[2] else "👤",
-                value=f"{'npc' if ent[2] else 'char'}:{ent[0]}"
-            ) for ent in entities[:25]
-        ]
-        super().__init__(placeholder="點選調閱角色或官方 NPC 完整總覽...", options=opts)
 
-    async def callback(self, interaction: discord.Interaction):
-        kind, name = self.values[0].split(":", 1)
+    @discord.ui.button(label="📜 完整榜單", style=discord.ButtonStyle.primary)
+    async def full_board(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
-            if kind == "char":
-                async with db.execute("SELECT age, gender, job, faction, cash, bank, works, stats, rank FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, name)) as cur:
-                    d = await cur.fetchone()
-                avatar = None
-            else:
-                async with db.execute("SELECT age, gender, identity, '官方勢力', cash, bank, works, stats, rank, avatar_url FROM npcs WHERE guild_id = ? AND name = ?", (self.guild_id, name)) as cur:
-                    d = await cur.fetchone()
-                avatar = d[9] if d else None
+            async with db.execute("SELECT name, stat_key FROM leaderboards WHERE guild_id = ?", (self.guild_id,)) as cur:
+                boards = await cur.fetchall()
 
-        if not d:
-            await interaction.response.send_message("❌ 查無檔案！", ephemeral=True)
+        if not boards:
+            await interaction.response.send_message("📋 目前本伺服器尚未建立任何榜單！", ephemeral=True)
             return
 
-        embed = discord.Embed(title=f"🪪 總覽調閱：{name} {'[官方 NPC]' if kind == 'npc' else ''}", color=0x9B59B6)
-        embed.add_field(name="基本身份", value=f"• 年齡: {d[0]} 歲\n• 性別: {d[1]}\n• 身分/職業: {d[2]}\n• 勢力: {d[3]}", inline=True)
-        embed.add_field(name="財務狀況", value=f"• 現金: ${d[4]:,}\n• 銀行存款: ${d[5]:,}\n• 當前地位: **【{d[8] or '未定級'}】**", inline=True)
+        parent_guild = self.guild_id
 
-        stats = json.loads(d[7]) if d[7] else {}
-        stat_str = " ｜ ".join([f"{k}: **{v:,}**" for k, v in stats.items()]) if stats else "尚未登記任何數值"
-        embed.add_field(name="📊 能力數值", value=stat_str, inline=False)
+        class BoardSelect(discord.ui.Select):
+            def __init__(self):
+                opts = [discord.SelectOption(label=b[0], description=f"依據：{b[1][:50]}", value=f"{b[0]}:{b[1]}") for b in boards[:25]]
+                super().__init__(placeholder="請選擇欲調閱的排行榜單...", options=opts)
 
-        works = json.loads(d[6]) if d[6] else []
-        work_str = "\n".join([f"• 【{w.get('category')}】《{w.get('title')}》({w.get('extra', '')})" for w in works[-5:]]) if works else "無成就或榮譽紀錄"
-        embed.add_field(name="🏆 生涯成就與🎖️榮譽 (最新5筆)", value=work_str, inline=False)
+            async def callback(self, inter: discord.Interaction):
+                b_name, formula = self.values[0].split(":", 1)
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("SELECT name, stats, rank, is_npc FROM characters WHERE guild_id = ?", (parent_guild,)) as cur:
+                        all_chars = await cur.fetchall()
 
-        if avatar:
-            embed.set_thumbnail(url=avatar)
+                ranked = []
+                for name, s_json, r_name, is_npc_val in all_chars:
+                    st = json.loads(s_json) if s_json else {}
+                    ranked.append((name, eval_stat_formula(formula, st), is_npc_val > 0, r_name))
 
+                ranked.sort(key=lambda x: x[1], reverse=True)
+
+                embed = discord.Embed(title=f"🏆【{b_name}】全城實力排行", color=0xF1C40F)
+                lines = []
+                medals = ["🥇", "🥈", "🥉"]
+                for i, (cname, val, is_npc, r_name) in enumerate(ranked[:15]):
+                    prefix = medals[i] if i < 3 else f"`#{i+1}`"
+                    npc_tag = " `[NPC]`" if is_npc else ""
+                    lines.append(f"{prefix} **{cname}**{npc_tag} ［{r_name or '未定級'}］ ｜ 得分：**{val:,}**")
+
+                embed.description = "\n".join(lines) if lines else "暫無數據"
+                embed.set_footer(text=f"計分依據：{formula}")
+                await inter.response.send_message(embed=embed, ephemeral=True)
+
+        v = discord.ui.View()
+        v.add_item(BoardSelect())
+        await interaction.response.send_message("請選擇想查閱的榜單：", view=v, ephemeral=True)
+
+    @discord.ui.button(label="👤 個人/NPC 排名", style=discord.ButtonStyle.secondary)
+    async def personal_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.target_char:
+            await interaction.response.send_message("⚠️ 請於發送指令時指定【名字】，以便查詢名次！", ephemeral=True)
+            return
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT name, stat_key FROM leaderboards WHERE guild_id = ?", (self.guild_id,)) as cur:
+                boards = await cur.fetchall()
+            async with db.execute("SELECT name, stats FROM characters WHERE guild_id = ?", (self.guild_id,)) as cur:
+                all_chars = await cur.fetchall()
+
+        if self.target_char not in [c[0] for c in all_chars]:
+            await interaction.response.send_message(f"❌ 查無名為 `{self.target_char}` 的角色或 NPC！", ephemeral=True)
+            return
+
+        embed = discord.Embed(title=f"📊【{self.target_char}】各榜單排行成績", color=0x3498DB)
+        lines = []
+
+        for b_name, formula in boards:
+            ranked = []
+            for name, s_json in all_chars:
+                ranked.append((name, eval_stat_formula(formula, json.loads(s_json) if s_json else {})))
+
+            ranked.sort(key=lambda x: x[1], reverse=True)
+            rank_pos = "未入榜"
+            val = 0
+            for idx, (cname, score) in enumerate(ranked):
+                if cname == self.target_char:
+                    rank_pos = f"第 **{idx + 1}** 名"
+                    val = score
+                    break
+            lines.append(f"• **{b_name}**：{rank_pos} ｜ 分數：`{val:,}`")
+
+        embed.description = "\n".join(lines)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="排行查詢", description="查詢各項實力榜單或查看個人/NPC 的各項榜單名次")
+@app_commands.describe(名字="若要查看個人或 NPC 排名，請填寫對應名稱")
+async def rank_query(interaction: discord.Interaction, 名字: str = None):
+    view = LeaderboardView(target_char=名字, guild_id=interaction.guild_id)
+    await interaction.response.send_message("🏆 請選擇你想查看的排行形式：", view=view, ephemeral=True)
+
+# -------------------- 指令：管理員後台專區 --------------------
 @bot.tree.command(name="檔案總覽", description="【管理員專用】檢視全伺服器所有角色與官方 NPC 總名冊與資產")
 @app_commands.default_permissions(administrator=True)
 async def admin_overview(interaction: discord.Interaction):
     g_id = interaction.guild_id
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name, rank, cash, bank FROM characters WHERE guild_id = ?", (g_id,)) as cur:
-            chars = [(r[0], r[1] or "未定級", False, r[2], r[3]) for r in await cur.fetchall()]
-        async with db.execute("SELECT name, rank, cash, bank FROM npcs WHERE guild_id = ?", (g_id,)) as cur:
-            npcs = [(r[0], r[1] or "未定級", True, r[2], r[3]) for r in await cur.fetchall()]
+        async with db.execute("SELECT name, rank, cash, bank, is_npc FROM characters WHERE guild_id = ?", (g_id,)) as cur:
+            all_entities = await cur.fetchall()
 
-    all_entities = chars + npcs
     if not all_entities:
         await interaction.response.send_message("📋 本伺服器目前尚未建立任何角色或 NPC！", ephemeral=True)
         return
 
+    class OverviewSelect(discord.ui.Select):
+        def __init__(self):
+            opts = [
+                discord.SelectOption(
+                    label=f"{'[NPC] ' if ent[4] > 0 else ''}{ent[0]}",
+                    description=f"地位: {ent[1]} ｜ 現金: ${ent[2]:,} ｜ 銀行: ${ent[3]:,}",
+                    emoji="🎭" if ent[4] > 0 else "👤",
+                    value=ent[0]
+                ) for ent in all_entities[:25]
+            ]
+            super().__init__(placeholder="點選調閱角色或 NPC 完整檔案...", options=opts)
+
+        async def callback(self, inter: discord.Interaction):
+            await view_char_cmd(inter, self.values[0])
+
     embed = discord.Embed(
         title="📑 流光城全體名冊總覽 (管理員後台)",
-        description=f"目前共計：**{len(chars)}** 位藝人角色 ｜ **{len(npcs)}** 位官方 NPC\n請由下方選單點選查看個別檔案：",
+        description=f"目前伺服器共計建檔：**{len(all_entities)}** 個角色與 NPC",
         color=0x34495E
     )
     view = discord.ui.View()
-    view.add_item(OverviewSelect(all_entities, g_id))
+    view.add_item(OverviewSelect())
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-# -------------------- 指令：任務系統（含成就、榮譽選填） --------------------
-@bot.tree.command(name="任務新增", description="【管理員專用】發布或修改任務（含成就/榮譽選填、回報區與接取限制）")
-@app_commands.default_permissions(administrator=True)
-@app_commands.choices(操作=[
-    app_commands.Choice(name="新增任務", value="add"),
-    app_commands.Choice(name="修改既有任務", value="edit")
-])
-@app_commands.choices(選擇欄位=[
-    app_commands.Choice(name="新手任務", value="新手任務"),
-    app_commands.Choice(name="一般任務", value="一般任務"),
-    app_commands.Choice(name="限時任務", value="限時任務"),
-    app_commands.Choice(name="特殊任務", value="特殊任務"),
-])
-@app_commands.describe(
-    操作="選擇新增或修改任務內容",
-    選擇欄位="任務所屬分類",
-    任務名="任務名稱（玩家文章標題需包含此名稱）",
-    金錢獎勵="自動匯入銀行的金錢 (可填 0)",
-    數值獎勵="【選填】獲得的數值 (例如: 容貌+10、商業價值+20)",
-    成就="【選填】完成時賦予的成就名稱或標籤",
-    榮譽="【選填】完成時賦予的榮譽稱號或等級（例如：奢華、傳說、S級）",
-    限制條件="【選填】接取門檻（例如：地位限一線、性別限女、勢力限指定組織）",
-    獎勵道具名="自動送入背包的道具名 (選填)",
-    獎勵道具數量="自動送入背包的道具數量 (預設 1)",
-    限時時間="僅限時任務需填寫，格式：YYYY/M/D HH:MM～YYYY/M/D HH:MM",
-    回報頻道="【選填】限定回報的文字頻道/討論串/論壇，留空則全服任意頻道可回報"
-)
-async def add_quest_cmd(
-    interaction: discord.Interaction,
-    操作: app_commands.Choice[str],
-    選擇欄位: app_commands.Choice[str],
-    任務名: str,
-    金錢獎勵: int = 0,
-    數值獎勵: str = "",
-    成就: str = "",
-    榮譽: str = "",
-    限制條件: str = "",
-    獎勵道具名: str = None,
-    獎勵道具數量: int = 1,
-    限時時間: str = None,
-    回報頻道: discord.abc.GuildChannel = None
-):
-    g_id = interaction.guild_id
-    category = 選擇欄位.value
-    time_limit_str = ""
-
-    if category == "限時任務":
-        if not 限時時間:
-            await interaction.response.send_message("❌ 欄位為【限時任務】時，必須填寫【限時時間】！", ephemeral=True)
-            return
-        time_limit_str = 限時時間.strip()
-
-    items = []
-    if 獎勵道具名:
-        items.append({"name": 獎勵道具名.strip(), "amount": 獎勵道具數量})
-
-    rep_ch_id = 回報頻道.id if 回報頻道 else 0
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id FROM quests WHERE guild_id = ? AND title = ?", (g_id, 任務名.strip())) as cur:
-            exists = await cur.fetchone()
-
-        if 操作.value == "add":
-            if exists:
-                await interaction.response.send_message(f"❌ 任務名稱 `{任務名}` 已經存在！若要修改請在【操作】選擇「修改既有任務」。", ephemeral=True)
-                return
-            await db.execute("""
-                INSERT INTO quests (guild_id, category, title, reward_cash, reward_items, reward_stats, achievement, honor, requirement, time_limit, report_channel_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (g_id, category, 任務名.strip(), 金錢獎勵, json.dumps(items, ensure_ascii=False), 數值獎勵.strip(), 成就.strip(), 榮譽.strip(), 限制條件.strip(), time_limit_str, rep_ch_id))
-            op_label = "新增"
-        else:
-            if not exists:
-                await interaction.response.send_message(f"❌ 找不到欲修改的任務 `{任務名}`！", ephemeral=True)
-                return
-            await db.execute("""
-                UPDATE quests SET category = ?, reward_cash = ?, reward_items = ?, reward_stats = ?, achievement = ?, honor = ?, requirement = ?, time_limit = ?, report_channel_id = ?
-                WHERE guild_id = ? AND title = ?
-            """, (category, 金錢獎勵, json.dumps(items, ensure_ascii=False), 數值獎勵.strip(), 成就.strip(), 榮譽.strip(), 限制條件.strip(), time_limit_str, rep_ch_id, g_id, 任務名.strip()))
-            op_label = "修改"
-
-        await db.commit()
-
-    rewards_list = []
-    if 金錢獎勵 > 0: rewards_list.append(f"${金錢獎勵:,}")
-    if 數值獎勵: rewards_list.append(f"{數值獎勵}")
-    if 獎勵道具名: rewards_list.append(f"{獎勵道具名}×{獎勵道具數量}")
-    reward_summary = " ｜ ".join(rewards_list) if rewards_list else "無實質物資獎勵"
-
-    achieve_desc = f"\n🏆 成就獎勵：【{成就}】" if 成就 else ""
-    honor_desc = f"\n🎖️ 榮譽稱號：【{榮譽}】" if 榮譽 else ""
-    req_desc = f"\n🚫 接取限制門檻：【{限制條件}】" if 限制條件 else ""
-    ch_desc = f"\n📍 限定回報區：{回報頻道.mention}" if 回報頻道 else "\n📍 限定回報區：全伺服器皆可"
-
-    await interaction.response.send_message(f"✅ 成功{op_label}任務！\n📌 分類：【{category}】\n🏷️ 任務名：**{任務名}**\n🎁 獎勵：{reward_summary}{achieve_desc}{honor_desc}{req_desc}{ch_desc}")
-
-@bot.tree.command(name="回報任務", description="回報已完成的任務文章連結，領取對應獎勵（自動累積成就與榮譽並檢測地位）")
-@app_commands.describe(角色名="回報任務的角色名稱", 文章連結="你所發表文章的帖子/討論串或訊息連結")
-async def report_quest(interaction: discord.Interaction, 角色名: str, 文章連結: str):
-    g_id = interaction.guild_id
-    await interaction.response.defer(ephemeral=False)
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, gender, faction, stats, rank, works FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
-            row = await cur.fetchone()
-            if not row:
-                await interaction.followup.send(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
-                return
-            u_id, gender, faction, stats_json, rank_name, works_json = row
-            if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ 你只能為自己持有的角色回報任務！", ephemeral=True)
-                return
-
-    link_pattern = r"channels/\d+/(\d+)(?:/(\d+))?"
-    match = re.search(link_pattern, 文章連結)
-    if not match:
-        await interaction.followup.send("❌ 無法識別文章連結格式！", ephemeral=True)
-        return
-
-    target_channel_id = int(match.group(1))
-    target_msg_id = int(match.group(2)) if match.group(2) else None
-    target_title = ""
-
-    try:
-        channel_or_thread = interaction.client.get_channel(target_channel_id) or await interaction.client.fetch_channel(target_channel_id)
-        if isinstance(channel_or_thread, discord.Thread):
-            target_title = channel_or_thread.name
-        elif target_msg_id:
-            msg = await channel_or_thread.fetch_message(target_msg_id)
-            target_title = msg.content
-    except Exception:
-        pass
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT title, reward_cash, reward_items, reward_stats, achievement, honor, requirement, time_limit, report_channel_id FROM quests WHERE guild_id = ?", (g_id,)) as cur:
-            all_quests = await cur.fetchall()
-
-        matched_quest = None
-        for q in all_quests:
-            if q[0] in target_title:
-                matched_quest = q
-                break
-
-        if not matched_quest:
-            await interaction.followup.send(f"❌ 驗證失敗：無法在提供的文章（標題/內容：`{target_title[:30]}`）中匹配到正確的任務名稱！", ephemeral=True)
-            return
-
-        q_title, r_cash, r_items_json, r_stats, achieve_val, honor_val, requirement, time_limit, req_channel_id = matched_quest
-
-        if req_channel_id and req_channel_id > 0:
-            current_ch = interaction.channel
-            is_correct = (current_ch.id == req_channel_id) or (hasattr(current_ch, "parent_id") and current_ch.parent_id == req_channel_id)
-            if not is_correct:
-                await interaction.followup.send(f"❌ 此任務限定在指定的專屬回報區操作！請前往：<#{req_channel_id}>", ephemeral=True)
-                return
-
-        char_stats = json.loads(stats_json) if stats_json else {}
-        if requirement:
-            if "地位" in requirement and rank_name not in requirement:
-                await interaction.followup.send(f"❌ 資格不符：此任務要求【{requirement}】，你當前地位為【{rank_name}】！", ephemeral=True)
-                return
-            if "性別" in requirement and gender not in requirement:
-                await interaction.followup.send(f"❌ 資格不符：此任務限制性別！", ephemeral=True)
-                return
-            if "勢力" in requirement and faction not in requirement:
-                await interaction.followup.send(f"❌ 資格不符：此任務限制指定勢力參與！", ephemeral=True)
-                return
-
-        async with db.execute("SELECT 1 FROM quest_completions WHERE guild_id = ? AND char_name = ? AND quest_title = ?", (g_id, 角色名, q_title)) as cur:
-            if await cur.fetchone():
-                await interaction.followup.send(f"⚠️ 角色 **{角色名}** 已經完成過任務【{q_title}】，不可重複回報！", ephemeral=True)
-                return
-
-        if r_cash > 0:
-            await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (r_cash, g_id, 角色名))
-
-        items = json.loads(r_items_json) if r_items_json else []
-        for it in items:
-            it_name, it_amt = it.get("name"), it.get("amount", 1)
-            async with db.execute("SELECT id FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ? AND giver = '任務獎勵'", (g_id, 角色名, it_name)) as cur:
-                inv_row = await cur.fetchone()
-                if inv_row:
-                    await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (it_amt, inv_row[0]))
-                else:
-                    await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, ?, '任務獎勵')", (g_id, 角色名, it_name, it_amt))
-
-        works = json.loads(works_json) if works_json else []
-        if achieve_val:
-            works.append({"category": "成就", "title": q_title, "extra": achieve_val})
-        if honor_val:
-            works.append({"category": "榮譽", "title": q_title, "extra": honor_val})
-        if not achieve_val and not honor_val:
-            works.append({"category": "成就", "title": q_title, "extra": "一般完成"})
-
-        await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), g_id, 角色名))
-        await db.execute("INSERT INTO quest_completions (guild_id, char_name, quest_title, completed_at) VALUES (?, ?, ?, ?)", (g_id, 角色名, q_title, time.time()))
-        await db.commit()
-
-    await check_and_update_rank(g_id, 角色名, interaction.channel)
-
-    earned = []
-    if r_cash > 0: earned.append(f"$ {r_cash:,}")
-    if r_stats: earned.append(f"+ 數值{r_stats}")
-    if achieve_val: earned.append(f"獲得成就【{achieve_val}】")
-    if honor_val: earned.append(f"獲得榮譽【{honor_val}】")
-    earned_str = " ｜ ".join(earned)
-
-    await interaction.followup.send(f"‼️任務確認完成\n獎勵：{earned_str}\n恭喜 {interaction.user.mention} 的【{角色名}】完成任務《{q_title}》！✅")
-
-# -------------------- 金融與銀行（全面支援角色與 NPC） --------------------
-@bot.tree.command(name="薪水", description="【管理員專用】發放薪水直接匯入角色或 NPC 的手頭現金")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(名字="角色或官方 NPC 名稱", 金額="發放的薪水金額 (純整數)")
-async def salary_cmd(interaction: discord.Interaction, 名字: str, 金額: int):
-    g_id = interaction.guild_id
-    if 金額 <= 0:
-        await interaction.response.send_message("❌ 金額必須大於 0！", ephemeral=True)
-        return
-
-    target_name = 名字.strip()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT cash FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-            is_char = await cur.fetchone() is not None
-
-        if is_char:
-            await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, g_id, target_name))
-        else:
-            async with db.execute("SELECT cash FROM npcs WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-                is_npc = await cur.fetchone() is not None
-            if is_npc:
-                await db.execute("UPDATE npcs SET cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, g_id, target_name))
-            else:
-                await interaction.response.send_message(f"❌ 查無名為 `{target_name}` 的角色或官方 NPC！", ephemeral=True)
-                return
-
-        await db.commit()
-
-    await interaction.response.send_message(f"💵 薪水 **${金額:,}** 已成功發放並入帳至【**{target_name}**】的手頭現金！")
-
-@bot.tree.command(name="轉錢", description="將手頭現金轉帳給其他角色或官方 NPC")
-@app_commands.describe(轉出者="發起轉帳的名字 (你的角色或 NPC)", 接收者="收款人的名字 (角色或 NPC)", 金額="轉帳金額")
-async def transfer(interaction: discord.Interaction, 轉出者: str, 接收者: str, 金額: int):
-    g_id = interaction.guild_id
-    if 金額 <= 0:
-        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
-        return
-
-    sender = 轉出者.strip()
-    receiver = 接收者.strip()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, cash FROM characters WHERE guild_id = ? AND name = ?", (g_id, sender)) as cur:
-            s_row = await cur.fetchone()
-
-        s_is_npc = False
-        if s_row:
-            if s_row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ 你只能操作自己持有的角色進行轉帳！", ephemeral=True)
-                return
-            s_cash = s_row[1]
-        else:
-            async with db.execute("SELECT cash FROM npcs WHERE guild_id = ? AND name = ?", (g_id, sender)) as cur:
-                npc_row = await cur.fetchone()
-            if npc_row and interaction.user.guild_permissions.administrator:
-                s_is_npc = True
-                s_cash = npc_row[0]
-            else:
-                await interaction.response.send_message("❌ 查無轉出對象，或權限不足無法操作 NPC 帳戶！", ephemeral=True)
-                return
-
-        if s_cash < 金額:
-            await interaction.response.send_message(f"❌ 現金不足！目前手頭僅有 ${s_cash:,}。", ephemeral=True)
-            return
-
-        async with db.execute("SELECT 1 FROM characters WHERE guild_id = ? AND name = ?", (g_id, receiver)) as cur:
-            r_is_char = await cur.fetchone() is not None
-
-        r_is_npc = False
-        if not r_is_char:
-            async with db.execute("SELECT 1 FROM npcs WHERE guild_id = ? AND name = ?", (g_id, receiver)) as cur:
-                r_is_npc = await cur.fetchone() is not None
-
-        if not r_is_char and not r_is_npc:
-            await interaction.response.send_message(f"❌ 查無接收對象【{receiver}】！", ephemeral=True)
-            return
-
-        s_tbl = "npcs" if s_is_npc else "characters"
-        r_tbl = "npcs" if r_is_npc else "characters"
-        await db.execute(f"UPDATE {s_tbl} SET cash = cash - ? WHERE guild_id = ? AND name = ?", (金額, g_id, sender))
-        await db.execute(f"UPDATE {r_tbl} SET cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, g_id, receiver))
-        await db.commit()
-
-    await interaction.response.send_message(f"💸 **{sender}** 成功轉帳 **${金額:,}** 給 **{receiver}**！")
-
-@bot.tree.command(name="存錢", description="將手頭現金存入銀行（支援角色與 NPC）")
-async def deposit(interaction: discord.Interaction, 名字: str, 金額: int):
-    g_id = interaction.guild_id
-    if 金額 <= 0:
-        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
-        return
-
-    target = 名字.strip()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, cash FROM characters WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
-            row = await cur.fetchone()
-
-        is_npc = False
-        if row:
-            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ 你只能為自己的角色存錢！", ephemeral=True)
-                return
-            cash = row[1]
-        else:
-            async with db.execute("SELECT cash FROM npcs WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
-                n_row = await cur.fetchone()
-            if n_row and interaction.user.guild_permissions.administrator:
-                is_npc = True
-                cash = n_row[0]
-            else:
-                await interaction.response.send_message("❌ 查無對象或權限不足！", ephemeral=True)
-                return
-
-        if cash < 金額:
-            await interaction.response.send_message(f"❌ 現金不足！目前僅有 ${cash:,}。", ephemeral=True)
-            return
-
-        tbl = "npcs" if is_npc else "characters"
-        await db.execute(f"UPDATE {tbl} SET cash = cash - ?, bank = bank + ? WHERE guild_id = ? AND name = ?", (金額, 金額, g_id, target))
-        await db.commit()
-
-    await interaction.response.send_message(f"🏦 **{target}** 成功將 **${金額:,}** 存入銀行帳戶！")
-
-@bot.tree.command(name="取錢", description="從銀行提取現金（支援角色與 NPC）")
-async def withdraw(interaction: discord.Interaction, 名字: str, 金額: int):
-    g_id = interaction.guild_id
-    if 金額 <= 0:
-        await interaction.response.send_message("❌ 金額需大於 0！", ephemeral=True)
-        return
-
-    target = 名字.strip()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, bank FROM characters WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
-            row = await cur.fetchone()
-
-        is_npc = False
-        if row:
-            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ 你只能為自己的角色提款！", ephemeral=True)
-                return
-            bank = row[1]
-        else:
-            async with db.execute("SELECT bank FROM npcs WHERE guild_id = ? AND name = ?", (g_id, target)) as cur:
-                n_row = await cur.fetchone()
-            if n_row and interaction.user.guild_permissions.administrator:
-                is_npc = True
-                bank = n_row[0]
-            else:
-                await interaction.response.send_message("❌ 查無對象或權限不足！", ephemeral=True)
-                return
-
-        if bank < 金額:
-            await interaction.response.send_message(f"❌ 存款不足！當前存款僅有 ${bank:,}。", ephemeral=True)
-            return
-
-        tbl = "npcs" if is_npc else "characters"
-        await db.execute(f"UPDATE {tbl} SET bank = bank - ?, cash = cash + ? WHERE guild_id = ? AND name = ?", (金額, 金額, g_id, target))
-        await db.commit()
-
-    await interaction.response.send_message(f"💵 **{target}** 成功從銀行提領 **${金額:,}** 現金！")
-
-# -------------------- 檔案更新（成就與榮譽通用彈出視窗） --------------------
-class WorkRegisterModal(discord.ui.Modal, title="成就與榮譽檔案登記"):
-    def __init__(self, char_name: str, category: str, guild_id: int):
-        super().__init__()
-        self.char_name = char_name
-        self.category = category
-        self.guild_id = guild_id
-
-        self.work_title = discord.ui.TextInput(label="名稱 / 標題", placeholder="例如：討伐黑龍 / 皇家大祭司 / 品牌代言")
-        self.add_item(self.work_title)
-
-        self.extra_info = discord.ui.TextInput(
-            label="備註 / 等級標籤", 
-            placeholder="例如：S級、奢華、特級、殿堂級", 
-            required=False,
-            style=discord.TextStyle.short
-        )
-        self.add_item(self.extra_info)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        work_entry = {
-            "category": self.category,
-            "title": self.work_title.value.strip(),
-            "extra": self.extra_info.value.strip() if self.extra_info.value else ""
-        }
-
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
-                row = await cur.fetchone()
-                works = json.loads(row[0]) if row and row[0] else []
-
-            works.append(work_entry)
-            await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
-            await db.commit()
-
-        await check_and_update_rank(self.guild_id, self.char_name, interaction.channel)
-        await interaction.response.send_message(f"✅ 已成功為 **{self.char_name}** 登記【{self.category}】：《{self.work_title.value}》！", ephemeral=True)
-
-class UpdateProfileSelect(discord.ui.Select):
-    def __init__(self, char_name: str, guild_id: int):
-        self.char_name = char_name
-        self.guild_id = guild_id
-        options = [
-            discord.SelectOption(label="更新基礎資料 (名字/性別/職業/勢力)", value="base", emoji="📝"),
-            discord.SelectOption(label="登記成就 (重要事件/功績/戰役歷練)", value="成就", emoji="🏆"),
-            discord.SelectOption(label="登記榮譽 (專屬稱號/頭銜/獲頒等級)", value="榮譽", emoji="🎖️")
-        ]
-        super().__init__(placeholder="選擇欲修改資料或登記履歷...", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        choice = self.values[0]
-        if choice == "base":
-            class BaseModal(discord.ui.Modal, title="修改角色基本資料"):
-                new_name = discord.ui.TextInput(label="名字", default=self.char_name)
-                gender = discord.ui.TextInput(label="性別")
-                job = discord.ui.TextInput(label="職業/身分")
-                faction = discord.ui.TextInput(label="所屬勢力")
-
-                async def on_submit(m_self, inter: discord.Interaction):
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("UPDATE characters SET name = ?, gender = ?, job = ?, faction = ? WHERE guild_id = ? AND name = ?",
-                                         (m_self.new_name.value, m_self.gender.value, m_self.job.value, m_self.faction.value, self.guild_id, self.char_name))
-                        await db.commit()
-                    await inter.response.send_message("✅ 角色資料更新完成！", ephemeral=True)
-
-            await interaction.response.send_modal(BaseModal())
-        else:
-            await interaction.response.send_modal(WorkRegisterModal(self.char_name, choice, self.guild_id))
-
-@bot.tree.command(name="檔案更新", description="更新角色基礎資料或登記成就/榮譽履歷")
-async def update_profile(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    view = discord.ui.View()
-    view.add_item(UpdateProfileSelect(角色名, g_id))
-    await interaction.response.send_message(f"📝 請選擇 **{角色名}** 要登記或更新的項目：", view=view, ephemeral=True)
-
-# -------------------- 個人檔案與 NPC 檔案（展示當前地位與晉升需求） --------------------
-@bot.tree.command(name="查看", description="查看角色完整檔案、當前地位、晉升需求與地圖簽證")
-async def view_profile(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    target_name = 角色名.strip()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT age, gender, job, faction, cash, bank, works, stats, ticket_ban_until, rank FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-            char = await cur.fetchone()
-
-        if not char:
-            await interaction.response.send_message(f"❌ 查無角色 **{target_name}**！", ephemeral=True)
-            return
-
-        age, gender, job, faction, cash, bank, works_json, stats_json, ban_until, rank_name = char
-
-        async with db.execute("SELECT npc_name, affection FROM npc_affection WHERE guild_id = ? AND char_name = ?", (g_id, target_name)) as cur:
-            aff_rows = await cur.fetchall()
-
-        async with db.execute("SELECT ticket_name, expire_time FROM active_tickets WHERE guild_id = ? AND char_name = ?", (g_id, target_name)) as cur:
-            ticket_row = await cur.fetchone()
-
-    stats = json.loads(stats_json) if stats_json else {}
-    works = json.loads(works_json) if works_json else []
-    rank_name = rank_name or "未定級"
-
-    embed = discord.Embed(title=f"🪪【{target_name}】個人檔案", color=0xE67E22)
-    embed.add_field(name="基本信息", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{job}\n• 勢力：{faction}", inline=True)
-    embed.add_field(name="資產狀況", value=f"• 手頭現金：${cash:,}\n• 銀行存款：${bank:,}", inline=True)
-
-    next_rank_desc = await get_next_rank_info(g_id, rank_name, stats, works)
-    embed.add_field(name=f"👑 當前地位：【{rank_name}】", value=next_rank_desc, inline=False)
-
-    now = time.time()
-    if ticket_row:
-        remain_hours = max(0, int((ticket_row[1] - now) / 3600))
-        embed.add_field(name="🗺️ 當前地圖簽證", value=f"• 使用中門票：**{ticket_row[0]}**\n• 剩餘時限：約 **{remain_hours}** 小時（逾期強制遣返）", inline=False)
-    elif ban_until and ban_until > now:
-        ban_remain = int((ban_until - now) / 3600)
-        embed.add_field(name="⚠️ 票務懲罰中", value=f"尚餘 **{ban_remain}** 小時禁止購票！", inline=False)
-
-    if stats:
-        stat_texts = [f"• {k}: **{v:,}**" for k, v in stats.items()]
-        embed.add_field(name="📊 數值屬性", value=" ｜ ".join(stat_texts), inline=False)
-
-    if works:
-        work_texts = [f"• 【{w.get('category')}】《{w.get('title')}》({w.get('extra', '')})" for w in works[-5:]]
-        embed.add_field(name="🏆 生涯成就與🎖️榮譽 (最新5筆)", value="\n".join(work_texts), inline=False)
-
-    if aff_rows:
-        aff_texts = [f"• **{npc}**：💖 {aff}" for npc, aff in aff_rows]
-        embed.add_field(name="NPC 羈絆好感度", value="\n".join(aff_texts), inline=False)
-
-    await interaction.response.send_message(embed=embed)
-
-async def render_npc_profile(interaction: discord.Interaction, npc_name: str, guild_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name, age, gender, identity, avatar_url, stats, cash, bank, works, rank FROM npcs WHERE guild_id = ? AND name = ?", (guild_id, npc_name)) as cur:
-            npc_info = await cur.fetchone()
-
-        if not npc_info:
-            await interaction.response.send_message(f"❌ 查無官方 NPC `{npc_name}`！", ephemeral=True)
-            return
-
-        name, age, gender, identity, avatar_url, stats_json, cash, bank, works_json, rank_name = npc_info
-        async with db.execute(
-            "SELECT char_name, affection FROM npc_affection WHERE guild_id = ? AND npc_name = ? AND affection > 0 ORDER BY affection DESC LIMIT 10",
-            (guild_id, npc_name)
-        ) as cur:
-            favor_records = await cur.fetchall()
-
-    stats = json.loads(stats_json) if stats_json else {}
-    works = json.loads(works_json) if works_json else []
-    rank_name = rank_name or "未定級"
-
-    embed = discord.Embed(title=f"🎭 官方 NPC 檔案：{name}", color=0xE91E63)
-    embed.add_field(name="基本資訊", value=f"• 年齡：{age} 歲\n• 性別：{gender}\n• 身分：{identity}", inline=True)
-    embed.add_field(name="財務狀態", value=f"• 現金：${cash:,}\n• 存款：${bank:,}", inline=True)
-
-    next_rank_desc = await get_next_rank_info(guild_id, rank_name, stats, works)
-    embed.add_field(name=f"👑 當前地位：【{rank_name}】", value=next_rank_desc, inline=False)
-
-    if stats:
-        stat_texts = [f"• {k}: **{v:,}**" for k, v in stats.items()]
-        embed.add_field(name="📊 能力數值", value=" ｜ ".join(stat_texts), inline=False)
-
-    if avatar_url:
-        embed.set_thumbnail(url=avatar_url)
-
-    if not favor_records:
-        favor_desc = "目前尚無角色與該 NPC 建立好感羈絆。"
-    else:
-        medals = ["🥇", "🥈", "🥉"]
-        ranking_lines = [f"{medals[idx] if idx < 3 else f'`#{idx+1}`'} **{cname}** ｜ 💖 **{favor:,}** 點" for idx, (cname, favor) in enumerate(favor_records)]
-        favor_desc = "\n".join(ranking_lines)
-
-    embed.add_field(name="🏆 好感度羈絆排行 (TOP 10)", value=favor_desc, inline=False)
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# -------------------- 指令：管理員專用功能 --------------------
-@bot.tree.command(name="商店與物品管理", description="【管理員專用】新增或修改官方商城、票務門票商品")
-@app_commands.default_permissions(administrator=True)
-@app_commands.choices(操作=[
-    app_commands.Choice(name="新增商品", value="add"),
-    app_commands.Choice(name="修改既有商品", value="edit")
-])
-@app_commands.describe(
-    操作="選擇新增或修改商品",
-    商店="分類名稱（若是門票請填「票務系統」）",
-    商品名="商品名稱",
-    價格="販售單價",
-    簡介="商品說明",
-    增加數值="使用時獲得的效果提示 (如: 實力+10)",
-    增加好感="贈送增加的好感度點數",
-    可否使用="是否可直接被使用",
-    是否為門票="是否為大地圖門票",
-    對應地圖身分組="若是門票，必須指定獲得的身分組"
-)
-async def manage_shop_item(
-    interaction: discord.Interaction,
-    操作: app_commands.Choice[str],
-    商店: str,
-    商品名: str,
-    價格: int,
-    簡介: str,
-    增加數值: str,
-    增加好感: int,
-    可否使用: bool,
-    是否為門票: bool = False,
-    對應地圖身分組: discord.Role = None
-):
-    g_id = interaction.guild_id
-    usable_val = 1 if 可否使用 else 0
-    role_id = 0
-
-    if 是否為門票:
-        if not 對應地圖身分組:
-            await interaction.response.send_message("❌ 門票必須指定【對應地圖身分組】！", ephemeral=True)
-            return
-        role_id = 對應地圖身分組.id
-        if 商店 != "票務系統":
-            商店 = "票務系統"
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id FROM shop_items WHERE guild_id = ? AND name = ?", (g_id, 商品名.strip())) as cur:
-            exists = await cur.fetchone()
-
-        if 操作.value == "add":
-            if exists:
-                await interaction.response.send_message(f"❌ 商品 `{商品名}` 已存在！若要調整請選「修改既有商品」。", ephemeral=True)
-                return
-            await db.execute("""
-                INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, target_role_id, seller)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '官方')
-            """, (g_id, 商店, 商品名.strip(), 價格, 簡介, 增加數值, 增加好感, usable_val, role_id))
-            op_str = "新增"
-        else:
-            if not exists:
-                await interaction.response.send_message(f"❌ 查無欲修改的商品 `{商品名}`！", ephemeral=True)
-                return
-            await db.execute("""
-                UPDATE shop_items SET shop_name = ?, price = ?, description = ?, stat_bonus = ?, affinity_bonus = ?, usable = ?, target_role_id = ?
-                WHERE guild_id = ? AND name = ?
-            """, (商店, 價格, 簡介, 增加數值, 增加好感, usable_val, role_id, g_id, 商品名.strip()))
-            op_str = "修改"
-
-        await db.commit()
-
-    role_info = f"\n🗺️ 門票身分組：{對應地圖身分組.mention}" if role_id > 0 else ""
-    await interaction.response.send_message(f"✅ 管理員已成功{op_str}商品：**{商品名}**（定價：${價格:,}）！{role_info}")
-
-@bot.tree.command(name="npc登記與修改", description="【管理員專用】登記全新 NPC 或修改既有 NPC 設定")
-@app_commands.default_permissions(administrator=True)
-@app_commands.choices(操作=[
-    app_commands.Choice(name="新增 NPC", value="add"),
-    app_commands.Choice(name="修改既有 NPC", value="edit")
-])
-@app_commands.describe(操作="選擇新增或修改 NPC 資料", 名字="NPC 姓名", 年齡="年齡", 性別="性別", 身分="背景設定", 圖像連結="肖像圖片網址")
-async def register_or_edit_npc(interaction: discord.Interaction, 操作: app_commands.Choice[str], 名字: str, 年齡: int, 性別: str, 身分: str, 圖像連結: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO npcs (guild_id, name, age, gender, identity, avatar_url, stats, cash, bank, works, rank)
-            VALUES (?, ?, ?, ?, ?, ?, '{}', 0, 0, '[]', '未定級')
-            ON CONFLICT(guild_id, name) DO UPDATE SET age = ?, gender = ?, identity = ?, avatar_url = ?
-        """, (g_id, 名字.strip(), 年齡, 性別, 身分, 圖像連結, 年齡, 性別, 身分, 圖像連結))
-        await db.commit()
-
-    embed = discord.Embed(title=f"👤 NPC 資料更新/登記完成：{名字}", color=0x9B59B6)
-    embed.add_field(name="基本信息", value=f"{年齡} 歲 / {性別} / {身分}", inline=False)
-    embed.set_thumbnail(url=圖像連結)
-    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="榜單管理", description="【管理員專用】新增或修改全城排行榜單公式")
 @app_commands.default_permissions(administrator=True)
@@ -1617,17 +2437,10 @@ async def admin_reward(
 ):
     g_id = interaction.guild_id
     target_name = 名字.strip()
-    is_npc = False
 
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
             row = await cur.fetchone()
-
-        if not row:
-            async with db.execute("SELECT stats FROM npcs WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-                row = await cur.fetchone()
-                if row:
-                    is_npc = True
 
         if not row:
             await interaction.response.send_message(f"❌ 查無名為 `{target_name}` 的角色或 NPC！", ephemeral=True)
@@ -1636,12 +2449,11 @@ async def admin_reward(
         stats = json.loads(row[0]) if row[0] else {}
         reward_msgs = []
 
-        tbl = "npcs" if is_npc else "characters"
         if 金錢 > 0:
-            await db.execute(f"UPDATE {tbl} SET bank = bank + ? WHERE guild_id = ? AND name = ?", (金錢, g_id, target_name))
+            await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (金錢, g_id, target_name))
             reward_msgs.append(f"💰 銀行存款 +${金錢:,}")
 
-        if 物品名稱 and not is_npc:
+        if 物品名稱:
             async with db.execute("SELECT id FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ? AND giver = '管理員獎勵'", (g_id, target_name, 物品名稱)) as cur:
                 inv_row = await cur.fetchone()
                 if inv_row:
@@ -1652,622 +2464,14 @@ async def admin_reward(
 
         if 數值名稱 and 數值點數 != 0:
             stats[數值名稱] = stats.get(數值名稱, 0) + 數值點數
-            await db.execute(f"UPDATE {tbl} SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(stats, ensure_ascii=False), g_id, target_name))
+            await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(stats, ensure_ascii=False), g_id, target_name))
             reward_msgs.append(f"✨ 數值【{數值名稱}】+{數值點數} (總計: {stats[數值名稱]})")
 
         await db.commit()
 
     await check_and_update_rank(g_id, target_name, interaction.channel)
-
     detail = " ｜ ".join(reward_msgs) if reward_msgs else "無實質資產變動"
     await interaction.response.send_message(f"🎁 管理員已成功為【{target_name}】發放資源：\n{detail}")
-
-# -------------------- 其他常規指令 --------------------
-@bot.tree.command(name="檔案建立", description="建立自己的角色檔案")
-async def create_profile(interaction: discord.Interaction, 名字: str, 年齡: int, 性別: str, 職業: str, 勢力: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, 名字.strip())) as cur:
-            if await cur.fetchone():
-                await interaction.response.send_message(f"❌ 角色名 **{名字}** 已存在！", ephemeral=True)
-                return
-
-        await db.execute("""
-            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, cash, bank, works, created_at, stats, ticket_ban_until, rank)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', ?, '{}', 0, '未定級')
-        """, (g_id, interaction.user.id, 名字.strip(), 年齡, 性別, 職業, 勢力, time.time()))
-        await db.commit()
-
-    await interaction.response.send_message(f"🎉 角色 **{名字}** 檔案建立成功！初始地位為【未定級】。")
-
-def eval_stat_formula(formula: str, stats: dict) -> int:
-    expr = formula
-    sorted_keys = sorted(stats.keys(), key=len, reverse=True)
-    for k in sorted_keys:
-        if k in expr:
-            expr = expr.replace(k, str(stats.get(k, 0)))
-    expr = re.sub(r"[\u4e00-\u9fa5]+", "0", expr)
-    clean_expr = re.sub(r"[^0-9+\-*/().\s]", "", expr)
-    try:
-        val = eval(clean_expr, {"__builtins__": None}, {})
-        return int(val)
-    except Exception:
-        return 0
-
-class LeaderboardView(discord.ui.View):
-    def __init__(self, target_char: str = None, guild_id: int = None):
-        super().__init__(timeout=180)
-        self.target_char = target_char
-        self.guild_id = guild_id
-
-    @discord.ui.button(label="📜 完整榜單", style=discord.ButtonStyle.primary)
-    async def full_board(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT name, stat_key FROM leaderboards WHERE guild_id = ?", (self.guild_id,)) as cur:
-                boards = await cur.fetchall()
-
-        if not boards:
-            await interaction.response.send_message("📋 目前本伺服器尚未建立任何榜單！", ephemeral=True)
-            return
-
-        parent_guild = self.guild_id
-
-        class BoardSelect(discord.ui.Select):
-            def __init__(self):
-                opts = [discord.SelectOption(label=b[0], description=f"依據：{b[1][:50]}", value=f"{b[0]}:{b[1]}") for b in boards[:25]]
-                super().__init__(placeholder="請選擇欲調閱的排行榜單...", options=opts)
-
-            async def callback(self, inter: discord.Interaction):
-                b_name, formula = self.values[0].split(":", 1)
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT name, stats, rank FROM characters WHERE guild_id = ?", (parent_guild,)) as cur:
-                        player_chars = await cur.fetchall()
-                    async with db.execute("SELECT name, stats, rank FROM npcs WHERE guild_id = ?", (parent_guild,)) as cur:
-                        npc_chars = await cur.fetchall()
-
-                ranked = []
-                for name, s_json, r_name in player_chars:
-                    st = json.loads(s_json) if s_json else {}
-                    ranked.append((name, eval_stat_formula(formula, st), False, r_name))
-
-                for name, s_json, r_name in npc_chars:
-                    st = json.loads(s_json) if s_json else {}
-                    ranked.append((name, eval_stat_formula(formula, st), True, r_name))
-
-                ranked.sort(key=lambda x: x[1], reverse=True)
-
-                embed = discord.Embed(title=f"🏆【{b_name}】全城實力排行 (含 NPC)", color=0xF1C40F)
-                lines = []
-                medals = ["🥇", "🥈", "🥉"]
-                for i, (cname, val, is_npc, r_name) in enumerate(ranked[:15]):
-                    prefix = medals[i] if i < 3 else f"`#{i+1}`"
-                    npc_tag = " `[NPC]`" if is_npc else ""
-                    lines.append(f"{prefix} **{cname}**{npc_tag} ［{r_name or '未定級'}］ ｜ 得分：**{val:,}**")
-
-                embed.description = "\n".join(lines) if lines else "暫無數據"
-                embed.set_footer(text=f"計分依據：{formula}")
-                await inter.response.send_message(embed=embed, ephemeral=True)
-
-        v = discord.ui.View()
-        v.add_item(BoardSelect())
-        await interaction.response.send_message("請選擇想查閱的榜單：", view=v, ephemeral=True)
-
-    @discord.ui.button(label="👤 個人/NPC 排名", style=discord.ButtonStyle.secondary)
-    async def personal_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.target_char:
-            await interaction.response.send_message("⚠️ 請於發送指令時指定【名字】，以便查詢名次！", ephemeral=True)
-            return
-
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT name, stat_key FROM leaderboards WHERE guild_id = ?", (self.guild_id,)) as cur:
-                boards = await cur.fetchall()
-            async with db.execute("SELECT name, stats FROM characters WHERE guild_id = ?", (self.guild_id,)) as cur:
-                all_chars = await cur.fetchall()
-            async with db.execute("SELECT name, stats FROM npcs WHERE guild_id = ?", (self.guild_id,)) as cur:
-                all_npcs = await cur.fetchall()
-
-        combined_names = {c[0] for c in all_chars} | {n[0] for n in all_npcs}
-        if self.target_char not in combined_names:
-            await interaction.response.send_message(f"❌ 查無名為 `{self.target_char}` 的角色或 NPC！", ephemeral=True)
-            return
-
-        embed = discord.Embed(title=f"📊【{self.target_char}】各榜單排行成績", color=0x3498DB)
-        lines = []
-
-        for b_name, formula in boards:
-            ranked = []
-            for name, s_json in all_chars:
-                ranked.append((name, eval_stat_formula(formula, json.loads(s_json) if s_json else {})))
-            for name, s_json in all_npcs:
-                ranked.append((name, eval_stat_formula(formula, json.loads(s_json) if s_json else {})))
-
-            ranked.sort(key=lambda x: x[1], reverse=True)
-            rank_pos = "未入榜"
-            val = 0
-            for idx, (cname, score) in enumerate(ranked):
-                if cname == self.target_char:
-                    rank_pos = f"第 **{idx + 1}** 名"
-                    val = score
-                    break
-            lines.append(f"• **{b_name}**：{rank_pos} ｜ 分數：`{val:,}`")
-
-        embed.description = "\n".join(lines)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="排行查詢", description="查詢各項實力榜單或查看個人/NPC 的各項榜單名次")
-@app_commands.describe(名字="若要查看個人或 NPC 排名，請填寫對應名稱")
-async def rank_query(interaction: discord.Interaction, 名字: str = None):
-    view = LeaderboardView(target_char=名字, guild_id=interaction.guild_id)
-    await interaction.response.send_message("🏆 請選擇你想查看的排行形式：", view=view, ephemeral=True)
-
-@bot.tree.command(name="數值登記", description="為角色或官方 NPC 登記/調整數值，或貼上人設單連結自動解析")
-@app_commands.describe(
-    名字="欲變更數值的角色或 NPC 名稱",
-    數值="欲變更的數值名稱（若貼人設單請填'自動'或留空）",
-    數字="增減數值點數（例如 10 或 -5，人設單模式填 0）",
-    人設單連結="貼上包含人設單內容的帖子/討論串或訊息連結"
-)
-async def register_stats_cmd(interaction: discord.Interaction, 名字: str, 數值: str = "自動", 數字: int = 0, 人設單連結: str = None):
-    g_id = interaction.guild_id
-    await interaction.response.defer(ephemeral=True)
-
-    target_name = 名字.strip()
-    is_npc = False
-    stats_json = "{}"
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-            row = await cur.fetchone()
-
-        if row:
-            u_id, stats_json = row
-            if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                await interaction.followup.send("❌ 你只能為自己持有的角色登記數值！", ephemeral=True)
-                return
-        else:
-            async with db.execute("SELECT stats FROM npcs WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-                npc_row = await cur.fetchone()
-
-            if npc_row:
-                if not interaction.user.guild_permissions.administrator:
-                    await interaction.followup.send("❌ 僅管理員可為官方 NPC 登記數值！", ephemeral=True)
-                    return
-                is_npc = True
-                stats_json = npc_row[0] if npc_row[0] else "{}"
-            else:
-                await interaction.followup.send(f"❌ 查無 `{target_name}`！", ephemeral=True)
-                return
-
-        char_stats = json.loads(stats_json) if stats_json else {}
-
-        if 人設單連結:
-            link_match = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 人設單連結)
-            if not link_match:
-                await interaction.followup.send("❌ 人設單連結格式不正確！", ephemeral=True)
-                return
-
-            c_id = int(link_match.group(1))
-            m_id = int(link_match.group(2)) if link_match.group(2) else None
-            post_content = ""
-            try:
-                ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
-                if isinstance(ch, discord.Thread):
-                    first_msg = None
-                    async for msg in ch.history(limit=5, oldest_first=True):
-                        first_msg = msg
-                        break
-                    post_content = first_msg.content if first_msg else ch.name
-                elif m_id:
-                    msg = await ch.fetch_message(m_id)
-                    post_content = msg.content
-            except Exception as e:
-                await interaction.followup.send(f"❌ 無法讀取文章：`{e}`", ephemeral=True)
-                return
-
-            added_records = []
-            for k, v in re.findall(r"([^\d\s:：,，]+)\s*[:：]?\s*(\d+)", post_content):
-                if k not in ["流光幣", "現金", "金錢", "年齡", "順序"]:
-                    char_stats[k] = int(v)
-                    added_records.append(f"{k}:{v}")
-
-            tbl = "npcs" if is_npc else "characters"
-            await db.execute(f"UPDATE {tbl} SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(char_stats, ensure_ascii=False), g_id, target_name))
-            await db.commit()
-
-            await check_and_update_rank(g_id, target_name, interaction.channel)
-            await interaction.followup.send(f"🎉 **{target_name}** 人設單數值已自動同步完畢！\n📊 錄入數值：{', '.join(added_records[:8])}")
-            return
-
-        if 數值 == "自動":
-            await interaction.followup.send("❌ 請填寫欲增減的【數值名稱】或貼上【人設單連結】！", ephemeral=True)
-            return
-
-        char_stats[數值] = char_stats.get(數值, 0) + 數字
-        tbl = "npcs" if is_npc else "characters"
-        await db.execute(f"UPDATE {tbl} SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(char_stats, ensure_ascii=False), g_id, target_name))
-        await db.commit()
-
-    await check_and_update_rank(g_id, target_name, interaction.channel)
-    sign = "+" if 數字 >= 0 else ""
-    await interaction.followup.send(f"✅ 已為 **{target_name}** 更新數值！【{數值} {sign}{數字}】（當前值：{char_stats[數值]}）")
-
-# -------------------- 商城與背包 --------------------
-class BuyModal(discord.ui.Modal, title="購買商品確認"):
-    def __init__(self, item_id: int, item_name: str, price: int, buyer: str, guild_id: int):
-        super().__init__()
-        self.item_id = item_id
-        self.item_name = item_name
-        self.price = price
-        self.buyer = buyer
-        self.guild_id = guild_id
-
-    amount = discord.ui.TextInput(label="購買數量", default="1", min_length=1, max_length=4)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            qty = int(self.amount.value)
-            if qty <= 0: raise ValueError
-        except ValueError:
-            await interaction.response.send_message("❌ 請輸入大於 0 的整數！", ephemeral=True)
-            return
-
-        total_cost = self.price * qty
-        now = time.time()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT cash, ticket_ban_until FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.buyer)) as cur:
-                user = await cur.fetchone()
-                if not user or user[0] < total_cost:
-                    await interaction.response.send_message(f"❌ 現金不足！需要 ${total_cost:,}，當前僅有 ${user[0] if user else 0:,}。", ephemeral=True)
-                    return
-                cash, ticket_ban_until = user
-
-            async with db.execute("SELECT shop_name, target_role_id, seller FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id)) as cur:
-                s_item = await cur.fetchone()
-                shop_name, target_role_id, seller = s_item
-
-            if (shop_name == "票務系統" or (target_role_id and target_role_id > 0)):
-                if ticket_ban_until and ticket_ban_until > now:
-                    remain_hours = int((ticket_ban_until - now) / 3600)
-                    await interaction.response.send_message(f"🚫 該角色因先前逾期未歸遭遣返，目前尚餘 **{remain_hours}** 小時禁止購票！", ephemeral=True)
-                    return
-
-            await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, self.buyer))
-            if seller != '官方':
-                await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (total_cost, self.guild_id, seller))
-
-            async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (self.guild_id, self.buyer, self.item_name)) as cur:
-                inv_row = await cur.fetchone()
-                if inv_row:
-                    await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (qty, inv_row[0]))
-                else:
-                    await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, ?, '系統商城')", (self.guild_id, self.buyer, self.item_name, qty))
-
-            if seller != '官方':
-                await db.execute("DELETE FROM shop_items WHERE guild_id = ? AND id = ?", (self.guild_id, self.item_id))
-
-            await db.commit()
-
-        await interaction.response.send_message(f"✅ 成功購買 **{self.item_name}** ×{qty}！共扣款 **${total_cost:,}**。")
-
-class ShopSelectView(discord.ui.View):
-    def __init__(self, char_name: str, shops: list, guild_id: int):
-        super().__init__(timeout=120)
-        self.char_name = char_name
-        self.guild_id = guild_id
-        for shop in shops:
-            button = discord.ui.Button(label=shop, style=discord.ButtonStyle.success if shop == "票務系統" else discord.ButtonStyle.primary)
-            button.callback = self.make_callback(shop)
-            self.add_item(button)
-
-    def make_callback(self, shop_name):
-        async def callback(interaction: discord.Interaction):
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute("SELECT id, name, price, description, stat_bonus, seller, target_role_id FROM shop_items WHERE guild_id = ? AND shop_name = ?", (self.guild_id, shop_name)) as cur:
-                    items = await cur.fetchall()
-
-            if not items:
-                await interaction.response.send_message(f"🏪 **{shop_name}** 目前無任何商品。", ephemeral=True)
-                return
-
-            embed = discord.Embed(title=f"🏪 商城 — 【{shop_name}】", color=0x2ECC71 if shop_name == "票務系統" else 0xD4AF37)
-            item_select_view = discord.ui.View(timeout=120)
-            options = []
-            for item in items[:25]:
-                item_id, i_name, price, desc, stat, seller, role_id = item
-                label_extra = f" (賣家: {seller})" if seller != '官方' else ""
-                role_tag = " ｜ 🗺️ 包含地圖身分組" if role_id > 0 else ""
-                embed.add_field(name=f"📦 {i_name} — ${price:,}{label_extra}{role_tag}", value=f"簡介: {desc}\n加成: {stat}", inline=False)
-                options.append(discord.SelectOption(label=f"{i_name} (${price:,})", value=str(item_id), description=desc[:50]))
-
-            select = discord.ui.Select(placeholder="選擇欲購買商品/門票...", options=options)
-            async def select_callback(inter: discord.Interaction):
-                selected_id = int(select.values[0])
-                for it in items:
-                    if it[0] == selected_id:
-                        await inter.response.send_modal(BuyModal(selected_id, it[1], it[2], self.char_name, self.guild_id))
-                        break
-
-            select.callback = select_callback
-            item_select_view.add_item(select)
-            await interaction.response.send_message(embed=embed, view=item_select_view, ephemeral=True)
-
-        return callback
-
-@bot.tree.command(name="商城", description="進入商城選單購買商品或票券")
-async def shop(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
-            if not await cur.fetchone():
-                await interaction.response.send_message("❌ 查無此角色檔案！", ephemeral=True)
-                return
-
-        async with db.execute("SELECT DISTINCT shop_name FROM shop_items WHERE guild_id = ?", (g_id,)) as cur:
-            shops = [row[0] for row in await cur.fetchall()]
-
-    for default_s in ["票務系統", "二手"]:
-        if default_s not in shops:
-            shops.append(default_s)
-
-    view = ShopSelectView(角色名, shops, g_id)
-    await interaction.response.send_message(f"🏬 請選擇 **{角色名}** 想進入的專區：", view=view, ephemeral=True)
-
-@bot.tree.command(name="背包", description="查看角色背包物品與來源")
-async def inventory(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT item_name, amount, giver FROM inventory WHERE guild_id = ? AND owner_name = ?", (g_id, 角色名)) as cur:
-            items = await cur.fetchall()
-
-    if not items:
-        await interaction.response.send_message(f"🎒 **{角色名}** 的背包目前沒有物品。", ephemeral=True)
-        return
-
-    embed = discord.Embed(title=f"🎒【{角色名}】的背包清單", color=0x3498DB)
-    for name, amt, giver in items:
-        embed.add_field(name=f"📦 {name} × {amt}", value=f"來源/贈予人: {giver}", inline=True)
-
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="使用", description="使用背包中的道具；門票將派發身分組（限期 336 小時）")
-async def use_item(interaction: discord.Interaction, 角色名: str, 物品名: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, 角色名, 物品名)) as cur:
-            inv = await cur.fetchone()
-            if not inv or inv[1] <= 0:
-                await interaction.response.send_message("❌ 背包中沒有該物品或數量不足！", ephemeral=True)
-                return
-
-        async with db.execute("SELECT usable, stat_bonus, target_role_id FROM shop_items WHERE guild_id = ? AND name = ?", (g_id, 物品名)) as cur:
-            item_info = await cur.fetchone()
-            if not item_info or item_info[0] == 0:
-                await interaction.response.send_message(f"⚠️ **{物品名}** 為不可使用之物品！", ephemeral=True)
-                return
-            usable, bonus_str, target_role_id = item_info
-
-        role_msg = ""
-        now = time.time()
-        if target_role_id and target_role_id > 0:
-            role = interaction.guild.get_role(target_role_id)
-            if role:
-                try:
-                    await interaction.user.add_roles(role, reason=f"使用門票【{物品名}】")
-                    role_msg = f"\n🗺️ 已獲得大地圖身分組 **【{role.name}】**！"
-                except Exception as e:
-                    role_msg = f"\n⚠️ 身分組派發失敗：{e}"
-
-            expire_at = now + (336 * 3600)
-            await db.execute("""
-                INSERT INTO active_tickets (guild_id, char_name, user_id, role_id, ticket_name, start_time, expire_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (g_id, 角色名, interaction.user.id, target_role_id, 物品名, now, expire_at))
-            role_msg += f"\n⏰ **簽證停留時間：336 小時（兩週）**。請在到期前使用 `/返回原本地圖`，否則將強制遣返並**限制 300 小時不得購票**！"
-
-        if inv[1] == 1:
-            await db.execute("DELETE FROM inventory WHERE id = ?", (inv[0],))
-        else:
-            await db.execute("UPDATE inventory SET amount = amount - 1 WHERE id = ?", (inv[0],))
-
-        stat_delta_msg = ""
-        stat_match = re.search(r"([^\d+-]+)\s*([+-]?\d+)", bonus_str)
-        if stat_match:
-            stat_name = stat_match.group(1).strip()
-            stat_val = int(stat_match.group(2))
-
-            async with db.execute("SELECT stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
-                char_row = await cur.fetchone()
-                stats = json.loads(char_row[0]) if char_row and char_row[0] else {}
-
-            stats[stat_name] = stats.get(stat_name, 0) + stat_val
-            await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(stats, ensure_ascii=False), g_id, 角色名))
-            stat_delta_msg = f"\n📊 **{stat_name}** 已自動更新至 **{stats[stat_name]}**！"
-
-        await db.commit()
-
-    await check_and_update_rank(g_id, 角色名, interaction.channel)
-    await interaction.response.send_message(f"✨ **{角色名}** 使用了 **{物品名}**！獲得效果：【{bonus_str}】{stat_delta_msg}（剩餘: {inv[1] - 1}）{role_msg}")
-
-@bot.tree.command(name="返回原本地圖", description="主動結束地圖旅行並收回身分組（免除遣返懲罰）")
-async def return_home(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, role_id FROM active_tickets WHERE guild_id = ? AND char_name = ?", (g_id, 角色名)) as cur:
-            ticket = await cur.fetchone()
-            if not ticket:
-                await interaction.response.send_message(f"ℹ️ 角色 **{角色名}** 目前並無啟用中的外地簽證或門票身分組！", ephemeral=True)
-                return
-
-            t_id, role_id = ticket
-            role = interaction.guild.get_role(role_id)
-            if role:
-                try:
-                    await interaction.user.remove_roles(role, reason="玩家主動返回原本地圖")
-                except Exception:
-                    pass
-
-            await db.execute("DELETE FROM active_tickets WHERE id = ?", (t_id,))
-            await db.commit()
-
-    await interaction.response.send_message(f"🏠 **{角色名}** 已順利返回原本地圖！已安全繳回門票身分組，無任何懲罰。")
-
-@bot.tree.command(name="售物", description="將擁有物品放上［二手］商城販售")
-async def sell_item(interaction: discord.Interaction, 角色名: str, 物品名: str, 價格: int):
-    g_id = interaction.guild_id
-    if 價格 <= 0:
-        await interaction.response.send_message("❌ 販售價格必須大於 0！", ephemeral=True)
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, 角色名, 物品名)) as cur:
-            inv = await cur.fetchone()
-            if not inv or inv[1] <= 0:
-                await interaction.response.send_message("❌ 背包中查無此物品！", ephemeral=True)
-                return
-
-        if inv[1] == 1:
-            await db.execute("DELETE FROM inventory WHERE id = ?", (inv[0],))
-        else:
-            await db.execute("UPDATE inventory SET amount = amount - 1 WHERE id = ?", (inv[0],))
-
-        await db.execute("""
-            INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, target_role_id, seller)
-            VALUES (?, '二手', ?, ?, '玩家自售物品', '無加成', 0, 1, 0, ?)
-        """, (g_id, 物品名, 價格, 角色名))
-        await db.commit()
-
-    await interaction.response.send_message(f"🏷️ 已將 **{物品名}** 上架至【二手】商城，定價為 **${價格:,}**！")
-
-@bot.tree.command(name="贈予", description="贈送背包道具給其他角色或官方 NPC")
-async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名: str, 物品名: str, 數量: int):
-    g_id = interaction.guild_id
-    if 數量 <= 0:
-        await interaction.response.send_message("❌ 數量需大於 0！", ephemeral=True)
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, 角色名, 物品名)) as cur:
-            inv = await cur.fetchone()
-            if not inv or inv[1] < 數量:
-                await interaction.response.send_message("❌ 背包中該物品數量不足！", ephemeral=True)
-                return
-
-        async with db.execute("SELECT name FROM npcs WHERE guild_id = ? AND name = ?", (g_id, 對象名)) as cur:
-            is_npc = await cur.fetchone() is not None
-
-        if inv[1] == 數量:
-            await db.execute("DELETE FROM inventory WHERE id = ?", (inv[0],))
-        else:
-            await db.execute("UPDATE inventory SET amount = amount - ? WHERE id = ?", (數量, inv[0]))
-
-        extra_msg = ""
-        if is_npc:
-            async with db.execute("SELECT affinity_bonus FROM shop_items WHERE guild_id = ? AND name = ?", (g_id, 物品名)) as cur:
-                item_row = await cur.fetchone()
-                single_aff = item_row[0] if item_row else 10
-            total_aff = single_aff * 數量
-
-            await db.execute("""
-                INSERT INTO npc_affection (guild_id, char_name, npc_name, affection)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(guild_id, char_name, npc_name) DO UPDATE SET affection = affection + ?
-            """, (g_id, 角色名, 對象名, total_aff, total_aff))
-            extra_msg = f"\n💖 NPC **{對象名}** 對你的好感度增加了 **+{total_aff}**！"
-        else:
-            async with db.execute("SELECT id, amount FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, 對象名, 物品名)) as cur:
-                target_inv = await cur.fetchone()
-                if target_inv:
-                    await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (數量, target_inv[0]))
-                else:
-                    await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, ?, ?)", (g_id, 對象名, 物品名, 數量, 角色名))
-
-        await db.commit()
-
-    await interaction.response.send_message(f"🎁 **{角色名}** 贈送了 **{物品名}** ×{數量} 給 **{對象名}**！{extra_msg}")
-
-@bot.tree.command(name="任務", description="查看角色當前完成與未完成的任務看板")
-async def view_quests(interaction: discord.Interaction, 角色名: str):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, 角色名)) as cur:
-            if not await cur.fetchone():
-                await interaction.response.send_message(f"❌ 查無角色 `{角色名}`！", ephemeral=True)
-                return
-
-        async with db.execute("SELECT category, title, reward_cash, reward_stats, achievement, honor, requirement, time_limit, report_channel_id FROM quests WHERE guild_id = ? ORDER BY id ASC", (g_id,)) as cur:
-            all_quests = await cur.fetchall()
-
-        async with db.execute("SELECT quest_title FROM quest_completions WHERE guild_id = ? AND char_name = ?", (g_id, 角色名)) as cur:
-            done_titles = {row[0] for row in await cur.fetchall()}
-
-    if not all_quests:
-        await interaction.response.send_message("📋 目前本伺服器尚未發布任何任務！", ephemeral=True)
-        return
-
-    categories = ["新手任務", "一般任務", "限時任務", "特殊任務"]
-    embed = discord.Embed(title=f"📜【{角色名}】的任務清單看板", color=0xF1C40F)
-
-    for cat in categories:
-        cat_quests = [q for q in all_quests if q[0] == cat]
-        if not cat_quests:
-            embed.add_field(name=f"📌 {cat}欄", value="暫無任務", inline=False)
-            continue
-
-        lines = []
-        for _, title, r_cash, r_stats, achieve, honor, req, time_limit, r_ch_id in cat_quests:
-            status = "✅" if title in done_titles else "❌"
-            limit_str = f" ⏳ `{time_limit}`" if time_limit else ""
-            ch_str = f" 📍 <#{r_ch_id}>" if r_ch_id > 0 else ""
-            achieve_str = f" 🏆`{achieve}`" if achieve else ""
-            honor_str = f" 🎖️`{honor}`" if honor else ""
-            req_str = f" 🚫 限`{req}`" if req else ""
-
-            rew_parts = []
-            if r_cash > 0: rew_parts.append(f"${r_cash:,}")
-            if r_stats: rew_parts.append(f"{r_stats}")
-            rew_str = " ｜ ".join(rew_parts) if rew_parts else "履歷證明"
-
-            lines.append(f"• **{title}**{achieve_str}{honor_str}{req_str}{limit_str}{ch_str}\n  └ 獎勵：{rew_str} ［{status}］")
-
-        embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class NPCSelectDropdown(discord.ui.Select):
-    def __init__(self, npcs, guild_id: int):
-        self.guild_id = guild_id
-        options = [
-            discord.SelectOption(label=npc[0], description=f"{npc[1]}歲 ｜ {npc[2]} ｜ {npc[3][:20]}", emoji="👤")
-            for npc in npcs[:25]
-        ]
-        super().__init__(placeholder="點此選擇欲查看檔案的官方 NPC...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        await render_npc_profile(interaction, self.values[0], self.guild_id)
-
-@bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 名冊大廳或個別檔案")
-@app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟全選單")
-async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
-    g_id = interaction.guild_id
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name, age, gender, identity, avatar_url FROM npcs WHERE guild_id = ?", (g_id,)) as cur:
-            all_npcs = await cur.fetchall()
-
-    if not all_npcs:
-        await interaction.response.send_message("📋 目前本伺服器尚未登記任何官方 NPC！", ephemeral=True)
-        return
-
-    if npc名稱:
-        await render_npc_profile(interaction, npc名稱.strip(), g_id)
-        return
-
-    embed = discord.Embed(title="👥 流光城官方 NPC 名錄大廳", description="請點選下方選單調閱各 NPC 個人檔案：", color=0x9B59B6)
-    for npc in all_npcs:
-        embed.add_field(name=f"👤 {npc[0]} ({npc[1]}歲 / {npc[2]})", value=f"身分：{npc[3]}", inline=True)
-
-    view = discord.ui.View(timeout=180)
-    view.add_item(NPCSelectDropdown(all_npcs, g_id))
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # -------------------- 清理與同步指令 --------------------
 @bot.command()
@@ -2292,12 +2496,9 @@ async def sync(ctx):
 @bot.event
 async def on_ready():
     await init_db()
-    if not daily_interest.is_running():
-        daily_interest.start()
-    if not monthly_age_up.is_running():
-        monthly_age_up.start()
-    if not check_ticket_expiration.is_running():
-        check_ticket_expiration.start()
+    if not daily_interest.is_running(): daily_interest.start()
+    if not monthly_age_up.is_running(): monthly_age_up.start()
+    if not check_ticket_expiration.is_running(): check_ticket_expiration.start()
 
     try:
         synced = await bot.tree.sync()
@@ -2313,3 +2514,265 @@ async def on_ready():
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# -------------------- 基礎設定與常數 --------------------
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+DB_PATH = "game_database.db"
+
+# -------------------- 資料庫初始化 --------------------
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 角色表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS characters (
+                guild_id INTEGER,
+                user_id INTEGER,
+                name TEXT,
+                age INTEGER,
+                gender TEXT,
+                job TEXT,
+                faction TEXT DEFAULT '無',
+                tags TEXT DEFAULT '',
+                relationship_status TEXT DEFAULT '單身',
+                cp_info TEXT DEFAULT '{}',
+                cash INTEGER DEFAULT 0,
+                bank INTEGER DEFAULT 0,
+                works TEXT DEFAULT '[]',
+                created_at REAL,
+                stats TEXT DEFAULT '{}',
+                ticket_ban_until REAL DEFAULT 0,
+                rank TEXT DEFAULT '未定級',
+                is_npc INTEGER DEFAULT 0,
+                company_id INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, name)
+            )
+        """)
+        # 2. 背包與二手
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                item_name TEXT,
+                amount INTEGER,
+                giver TEXT DEFAULT '系統商城'
+            )
+        """)
+        # 3. 官方與二手商店
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS shop_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                shop_name TEXT,
+                name TEXT,
+                price INTEGER,
+                description TEXT,
+                stat_bonus TEXT,
+                affinity_bonus INTEGER DEFAULT 0,
+                usable INTEGER DEFAULT 1,
+                target_role_id INTEGER DEFAULT 0,
+                seller TEXT DEFAULT '官方',
+                asset_type TEXT DEFAULT '一般',
+                faction_name TEXT DEFAULT ''
+            )
+        """)
+        # 4. 交際關係表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS relationships (
+                guild_id INTEGER,
+                from_char TEXT,
+                to_char TEXT,
+                tendency TEXT DEFAULT '普通',
+                affection INTEGER DEFAULT 0,
+                status_desc TEXT DEFAULT '初識',
+                PRIMARY KEY (guild_id, from_char, to_char)
+            )
+        """)
+        # 5. 系統設定
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                guild_id INTEGER,
+                key TEXT,
+                value TEXT,
+                PRIMARY KEY (guild_id, key)
+            )
+        """)
+        # 6. 審核兩段式紀錄表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                guild_id INTEGER,
+                message_link TEXT,
+                char_name TEXT,
+                audit_count INTEGER DEFAULT 1,
+                PRIMARY KEY (guild_id, message_link)
+            )
+        """)
+        # 7. 資產產權表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS personal_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                asset_type TEXT,
+                asset_name TEXT,
+                price INTEGER,
+                details TEXT DEFAULT ''
+            )
+        """)
+        # 8. 公司體系表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                purpose TEXT,
+                type_name TEXT,
+                structure TEXT,
+                creator_name TEXT,
+                partners TEXT DEFAULT '[]',
+                total_capital INTEGER DEFAULT 0,
+                split_ratio REAL DEFAULT 0.5,
+                allowed_jobs TEXT DEFAULT '',
+                balance INTEGER DEFAULT 0
+            )
+        """)
+        # 9. 陣營表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS factions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                desc TEXT,
+                tax_rate REAL DEFAULT 0.1,
+                exit_fee INTEGER DEFAULT 5000,
+                treasury INTEGER DEFAULT 0,
+                weekly_gift TEXT DEFAULT '{}',
+                top_rewards TEXT DEFAULT '[]'
+            )
+        """)
+        # 10. 陣營成員貢獻表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS faction_members (
+                guild_id INTEGER,
+                faction_name TEXT,
+                char_name TEXT,
+                contribution INTEGER DEFAULT 0,
+                last_gift_week INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, faction_name, char_name)
+            )
+        """)
+        # 11. 任務與地位
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                category TEXT,
+                title TEXT,
+                reward_cash INTEGER DEFAULT 0,
+                reward_items TEXT DEFAULT '[]',
+                reward_stats TEXT DEFAULT '',
+                achievement TEXT DEFAULT '',
+                honor TEXT DEFAULT '',
+                requirement TEXT DEFAULT '',
+                time_limit TEXT DEFAULT '',
+                report_channel_id INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quest_completions (
+                guild_id INTEGER,
+                char_name TEXT,
+                quest_title TEXT,
+                completed_at REAL,
+                PRIMARY KEY (guild_id, char_name, quest_title)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS rank_settings (
+                guild_id INTEGER,
+                rank_order INTEGER,
+                rank_name TEXT,
+                work_req TEXT DEFAULT '',
+                endorse_req TEXT DEFAULT '',
+                stat_req TEXT DEFAULT '',
+                max_slots INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, rank_order)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                stat_key TEXT
+            )
+        """)
+        # 12. 抽獎表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS lottery_pools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                lottery_name TEXT,
+                allowed_role_id INTEGER DEFAULT 0,
+                item_name TEXT,
+                initial_count INTEGER DEFAULT 1,
+                remaining_count INTEGER DEFAULT 1,
+                can_repeat INTEGER DEFAULT 1
+            )
+        """)
+        # 13. 門票時效
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                user_id INTEGER,
+                role_id INTEGER,
+                ticket_name TEXT,
+                start_time REAL,
+                expire_time REAL
+            )
+        """)
+        await db.commit()
+
+# -------------------- 陣營抽成自動偵測引擎 --------------------
+async def process_faction_tax(guild_id: int, char_name: str, gross_amount: int, work_title: str = None) -> tuple[int, int, str]:
+    """
+    自動偵測陣營抽成：
+    1. 必須角色有登記作品/通告，且通告費入帳時執行
+    2. 檢查所屬陣營是否設有抽成比例 (tax_rate > 0)
+    3. 自動扣款並注入陣營金庫，同時累積該成員的陣營貢獻度
+    回傳: (扣除後實拿金額, 陣營抽成金額, 抽成提示訊息)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT faction, works FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
+            row = await cur.fetchone()
+
+        if not row or row[0] == "無":
+            return gross_amount, 0, ""
+
+        faction_name, works_json = row
+        works = json.loads(works_json) if works_json else []
+
+        # 檢查該作品是否已登記
+        target_work = None
+        if work_title:
+            for w in works:
+                if w.get("title") == work_title.strip():
+                    target_work = w
+                    break
+
+        async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (guild_id, faction_name)) as cur:
+            f_row = await cur.fetchone()
+
