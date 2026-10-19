@@ -2315,7 +2315,7 @@ async def view_quests(interaction: discord.Interaction, 角色名: str):
         embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
-    # -------------------- 指令：/陣營 --------------------
+# -------------------- 指令：/陣營 --------------------
 @bot.tree.command(name="陣營", description="陣營主控台：捐獻、查看金庫排名、購買商城全體加成或退出")
 @app_commands.choices(操作=[
     app_commands.Choice(name="查看現況與領週禮包", value="view"),
