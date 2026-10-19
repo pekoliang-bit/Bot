@@ -1699,7 +1699,7 @@ async def gift_item(interaction: discord.Interaction, 角色名: str, 對象名:
         await db.commit()
 
     await interaction.response.send_message(f"🎁 **{sender}** 成功將 **{i_name}** ×{數量} 贈送給了 **{receiver}**！{bonus_msg}")
-# -------------------- 查看系統：獨立翻頁視窗（成就、榮譽、交際） --------------------
+    # -------------------- 查看系統：獨立翻頁視窗（成就、榮譽、交際） --------------------
 class PagedDetailView(discord.ui.View):
     def __init__(self, title: str, items: list, color: int):
         super().__init__(timeout=120)
@@ -1969,7 +1969,7 @@ async def rank_setting_cmd(
             await interaction.response.send_message("📋 本伺服器尚未建立任何地位限制等級！", ephemeral=True)
             return
 
-        embed = discord.Embed(title="👑 流光城地位限制規範一覽表", color=0xF1C40F)
+        embed = discord.Embed(title="👑 地位限制規範一覽表", color=0xF1C40F)
         for r_order, r_name, w_req, e_req, s_req, slots in rows:
             slot_str = f"限量 {slots} 人" if slots > 0 else "名額不限"
             detail = f"• 成就限制：{w_req or '無'}\n• 榮譽限制：{e_req or '無'}\n• 數值限制：{s_req or '無'}\n• 席位限制：{slot_str}"
@@ -2909,3 +2909,4 @@ except Exception as e:
     print(f"❌ 機器人啟動崩潰: {e}")
     traceback.print_exc()
     sys.exit(1)
+
