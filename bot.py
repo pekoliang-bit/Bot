@@ -6,23 +6,25 @@ import time
 import random
 import threading
 import re
+import traceback
 from datetime import datetime
 
-# 自動安裝必要套件
+# -------------------- 自動補齊套件 --------------------
 try:
     import aiosqlite
     import flask
+    import discord
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "aiosqlite", "flask", "discord.py"])
     import aiosqlite
     import flask
+    import discord
 
-import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from flask import Flask
 
-# -------------------- 輕量假網頁（防雲端斷線） --------------------
+# -------------------- 輕量假網頁（防 Render 斷線） --------------------
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -185,7 +187,7 @@ async def init_db():
                 PRIMARY KEY (guild_id, faction_name, char_name)
             )
         """)
-        # 11. 陣營作品抽成查核表 (確保每部作品/任務只扣款一次)
+        # 11. 陣營作品抽成查核表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS work_tax_logs (
                 guild_id INTEGER,
@@ -270,7 +272,6 @@ async def init_db():
                 expire_time REAL
             )
         """)
-
         await db.commit()
 
 # -------------------- 定時背景任務 --------------------
@@ -331,29 +332,23 @@ async def monthly_age_up():
 
 # -------------------- 陣營作品自動扣稅核心函式 --------------------
 async def process_faction_tax(guild_id: int, char_name: str, work_title: str, gross_reward: int, channel=None):
-    """
-    確保在作品登記、獎勵全額入帳後，進行陣營抽成。每個作品只會扣款一次。
-    """
     if gross_reward <= 0:
         return ""
 
     async with aiosqlite.connect(DB_PATH) as db:
-        # 1. 檢查是否已經扣過稅
         async with db.execute(
             "SELECT 1 FROM work_tax_logs WHERE guild_id = ? AND char_name = ? AND work_title = ?",
             (guild_id, char_name, work_title)
         ) as cur:
             if await cur.fetchone():
-                return ""  # 已經扣過，直接跳過
+                return ""
 
-        # 2. 獲取角色所屬陣營
         async with db.execute("SELECT faction FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
             c_row = await cur.fetchone()
             if not c_row or c_row[0] in ["無", "官方勢力", ""]:
                 return ""
             faction_name = c_row[0]
 
-        # 3. 獲取陣營抽成比例
         async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (guild_id, faction_name)) as cur:
             f_row = await cur.fetchone()
             if not f_row:
@@ -364,7 +359,6 @@ async def process_faction_tax(guild_id: int, char_name: str, work_title: str, gr
         if tax_amount <= 0:
             return ""
 
-        # 4. 自角色銀行扣除稅款，並注入陣營金庫公款，同步提升個人陣營貢獻度
         await db.execute("UPDATE characters SET bank = bank - ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, char_name))
         await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, faction_name))
         await db.execute("""
@@ -373,14 +367,13 @@ async def process_faction_tax(guild_id: int, char_name: str, work_title: str, gr
             ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
         """, (guild_id, faction_name, char_name, tax_amount, tax_amount))
 
-        # 5. 寫入防重複日誌
         await db.execute(
             "INSERT INTO work_tax_logs (guild_id, char_name, work_title, tax_paid, paid_at) VALUES (?, ?, ?, ?, ?)",
             (guild_id, char_name, work_title, tax_amount, time.time())
         )
         await db.commit()
 
-    return f"\n🏛️ **陣營抽成**：因作品《{work_title}》收益已入帳，陣營【{faction_name}】扣繳 {int(tax_rate*100)}% 稅款 **${tax_amount:,}** 注入陣營公款（個人貢獻增加）！"
+    return f"\n🏛️ **陣營抽成**：作品《{work_title}》收益已核發，陣營【{faction_name}】扣繳 {int(tax_rate*100)}% 稅款 **${tax_amount:,}** 注入公款！"
 
 # -------------------- 地位晉升判定核心 --------------------
 async def check_and_update_rank(guild_id: int, char_name: str, channel=None):
@@ -607,7 +600,6 @@ async def adjust_word_settlement(
     embed.add_field(name="貨幣單位", value=f"【{貨幣單位.strip()}】", inline=True)
     embed.add_field(name="換算比率", value=f"每 1 字 = {一字折合金錢} {貨幣單位.strip()}", inline=True)
     await interaction.response.send_message(embed=embed)
-
 # -------------------- 指令：抽獎系統 --------------------
 @bot.tree.command(name="新增抽獎", description="【管理員專用】在伺服器發布全新的獎項抽獎池")
 @app_commands.default_permissions(administrator=True)
@@ -689,7 +681,7 @@ async def view_lottery(interaction: discord.Interaction):
         await interaction.response.send_message("📋 目前本伺服器尚未舉辦任何抽獎活動！", ephemeral=True)
         return
 
-    embed = discord.Embed(title="🎊 流光城抽獎活動一覽", description="請由下方選單點選各獎項查閱詳細規則與庫存：", color=0xF1C40F)
+    embed = discord.Embed(title="🎊 抽獎活動一覽", description="請由下方選單點選各獎項查閱詳細規則與庫存：", color=0xF1C40F)
     for p in pools[:10]:
         r_info = f"<@&{p[1]}>" if p[1] > 0 else "全員可抽"
         status = f"剩餘 {p[4]} 件" if (p[5] == 0) else "名額不限"
@@ -874,7 +866,6 @@ class ProfileUpdateStepView(discord.ui.View):
                     await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
                     await db.commit()
 
-                # 自動觸發地位檢測
                 await check_and_update_rank(self.guild_id, self.char_name, inter.channel)
                 await inter.response.send_message(f"✅ 成功為 **{self.char_name}** 登記成就：【{entry['type']}】《{entry['title']}》（{entry['extra']}）！", ephemeral=True)
 
@@ -1218,7 +1209,7 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
 
     view = ProfileMainView(target_name, g_id)
     await interaction.response.send_message(embed=embed, view=view)
-
+# -------------------- 指令：/npc查看 --------------------
 @bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 名冊大廳或個別檔案")
 @app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟全選單")
 async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
@@ -1502,7 +1493,6 @@ async def report_quest(interaction: discord.Interaction, 角色名: str, 文章�
                 await interaction.followup.send(f"⚠️ 角色 **{角色名}** 已經完成過任務【{q_title}】，不可重複回報！", ephemeral=True)
                 return
 
-        # 1. 獎勵金幣先全額匯入銀行
         if r_cash > 0:
             await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (r_cash, g_id, 角色名))
 
@@ -1528,10 +1518,7 @@ async def report_quest(interaction: discord.Interaction, 角色名: str, 文章�
         await db.execute("INSERT INTO quest_completions (guild_id, char_name, quest_title, completed_at) VALUES (?, ?, ?, ?)", (g_id, 角色名, q_title, time.time()))
         await db.commit()
 
-    # 2. 自動扣繳陣營抽成（每個作品/任務只會扣繳一次）
     tax_info = await process_faction_tax(g_id, 角色名, q_title, r_cash, interaction.channel)
-
-    # 3. 自動觸發地位晉升檢測
     await check_and_update_rank(g_id, 角色名, interaction.channel)
 
     earned = []
@@ -2492,7 +2479,7 @@ async def sync(ctx):
     except Exception as e:
         await msg.edit(content=f"❌ 同步失敗: `{e}`")
 
-# -------------------- 啟動與全域同步 --------------------
+# -------------------- 啟動與全域同步（含 Token 嚴格防呆） --------------------
 @bot.event
 async def on_ready():
     await init_db()
@@ -2508,377 +2495,18 @@ async def on_ready():
             print(f"📌 指令: /{cmd.name}")
         print(f"====================================")
     except Exception as e:
-        print(f"❌ 同步指令失敗: {e}")
+        print(f"❌ 指令同步失敗: {e}")
 
     print(f"流光城系統已就緒：{bot.user}")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-bot.run(TOKEN)
+if not TOKEN:
+    print("❌ 錯誤：未偵測到環境變數 DISCORD_TOKEN！請至雲端平台後台的 Environment 設定中填寫正確的 Bot Token。")
+    sys.exit(1)
 
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host='0.0.0.0', port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
-
-# -------------------- 基礎設定與常數 --------------------
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-DB_PATH = "game_database.db"
-
-# -------------------- 資料庫初始化 --------------------
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        # 1. 角色表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS characters (
-                guild_id INTEGER,
-                user_id INTEGER,
-                name TEXT,
-                age INTEGER,
-                gender TEXT,
-                job TEXT,
-                faction TEXT DEFAULT '無',
-                tags TEXT DEFAULT '',
-                relationship_status TEXT DEFAULT '單身',
-                cp_info TEXT DEFAULT '{}',
-                cash INTEGER DEFAULT 0,
-                bank INTEGER DEFAULT 0,
-                works TEXT DEFAULT '[]',
-                created_at REAL,
-                stats TEXT DEFAULT '{}',
-                ticket_ban_until REAL DEFAULT 0,
-                rank TEXT DEFAULT '未定級',
-                is_npc INTEGER DEFAULT 0,
-                company_id INTEGER DEFAULT 0,
-                PRIMARY KEY (guild_id, name)
-            )
-        """)
-        # 2. 背包與二手
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                owner_name TEXT,
-                item_name TEXT,
-                amount INTEGER,
-                giver TEXT DEFAULT '系統商城'
-            )
-        """)
-        # 3. 官方與二手商店
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS shop_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                shop_name TEXT,
-                name TEXT,
-                price INTEGER,
-                description TEXT,
-                stat_bonus TEXT,
-                affinity_bonus INTEGER DEFAULT 0,
-                usable INTEGER DEFAULT 1,
-                target_role_id INTEGER DEFAULT 0,
-                seller TEXT DEFAULT '官方',
-                asset_type TEXT DEFAULT '一般',
-                faction_name TEXT DEFAULT ''
-            )
-        """)
-        # 4. 交際關係表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS relationships (
-                guild_id INTEGER,
-                from_char TEXT,
-                to_char TEXT,
-                tendency TEXT DEFAULT '普通',
-                affection INTEGER DEFAULT 0,
-                status_desc TEXT DEFAULT '初識',
-                PRIMARY KEY (guild_id, from_char, to_char)
-            )
-        """)
-        # 5. 系統設定
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS system_settings (
-                guild_id INTEGER,
-                key TEXT,
-                value TEXT,
-                PRIMARY KEY (guild_id, key)
-            )
-        """)
-        # 6. 審核兩段式紀錄表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                guild_id INTEGER,
-                message_link TEXT,
-                char_name TEXT,
-                audit_count INTEGER DEFAULT 1,
-                PRIMARY KEY (guild_id, message_link)
-            )
-        """)
-        # 7. 資產產權表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS personal_assets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                owner_name TEXT,
-                asset_type TEXT,
-                asset_name TEXT,
-                price INTEGER,
-                details TEXT DEFAULT ''
-            )
-        """)
-        # 8. 公司體系表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS companies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                name TEXT,
-                purpose TEXT,
-                type_name TEXT,
-                structure TEXT,
-                creator_name TEXT,
-                partners TEXT DEFAULT '[]',
-                total_capital INTEGER DEFAULT 0,
-                split_ratio REAL DEFAULT 0.5,
-                allowed_jobs TEXT DEFAULT '',
-                balance INTEGER DEFAULT 0
-            )
-        """)
-        # 9. 陣營表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS factions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                name TEXT,
-                desc TEXT,
-                tax_rate REAL DEFAULT 0.1,
-                exit_fee INTEGER DEFAULT 5000,
-                treasury INTEGER DEFAULT 0,
-                weekly_gift TEXT DEFAULT '{}',
-                top_rewards TEXT DEFAULT '[]'
-            )
-        """)
-        # 10. 陣營成員貢獻表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS faction_members (
-                guild_id INTEGER,
-                faction_name TEXT,
-                char_name TEXT,
-                contribution INTEGER DEFAULT 0,
-                last_gift_week INTEGER DEFAULT 0,
-                PRIMARY KEY (guild_id, faction_name, char_name)
-            )
-        """)
-        # 11. 任務與地位
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS quests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                category TEXT,
-                title TEXT,
-                reward_cash INTEGER DEFAULT 0,
-                reward_items TEXT DEFAULT '[]',
-                reward_stats TEXT DEFAULT '',
-                achievement TEXT DEFAULT '',
-                honor TEXT DEFAULT '',
-                requirement TEXT DEFAULT '',
-                time_limit TEXT DEFAULT '',
-                report_channel_id INTEGER DEFAULT 0
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS quest_completions (
-                guild_id INTEGER,
-                char_name TEXT,
-                quest_title TEXT,
-                completed_at REAL,
-                PRIMARY KEY (guild_id, char_name, quest_title)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS rank_settings (
-                guild_id INTEGER,
-                rank_order INTEGER,
-                rank_name TEXT,
-                work_req TEXT DEFAULT '',
-                endorse_req TEXT DEFAULT '',
-                stat_req TEXT DEFAULT '',
-                max_slots INTEGER DEFAULT 0,
-                PRIMARY KEY (guild_id, rank_order)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS leaderboards (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                name TEXT,
-                stat_key TEXT
-            )
-        """)
-        # 12. 抽獎表
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS lottery_pools (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                lottery_name TEXT,
-                allowed_role_id INTEGER DEFAULT 0,
-                item_name TEXT,
-                initial_count INTEGER DEFAULT 1,
-                remaining_count INTEGER DEFAULT 1,
-                can_repeat INTEGER DEFAULT 1
-            )
-        """)
-        # 13. 門票時效
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS active_tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER,
-                char_name TEXT,
-                user_id INTEGER,
-                role_id INTEGER,
-                ticket_name TEXT,
-                start_time REAL,
-                expire_time REAL
-            )
-        """)
-        await db.commit()
-
-# -------------------- 陣營抽成自動偵測引擎 --------------------
-async def process_faction_tax(guild_id: int, char_name: str, gross_amount: int, work_title: str = None) -> tuple[int, int, str]:
-    """
-    自動偵測陣營抽成：
-    1. 必須角色有登記作品/通告，且通告費入帳時執行
-    2. 檢查所屬陣營是否設有抽成比例 (tax_rate > 0)
-    3. 自動扣款並注入陣營金庫，同時累積該成員的陣營貢獻度
-    回傳: (扣除後實拿金額, 陣營抽成金額, 抽成提示訊息)
-    """
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT faction, works FROM characters WHERE guild_id = ? AND name = ?", (guild_id, char_name)) as cur:
-            row = await cur.fetchone()
-
-        if not row or row[0] == "無":
-            return gross_amount, 0, ""
-
-        faction_name, works_json = row
-        works = json.loads(works_json) if works_json else []
-
-        # 檢查該作品是否已登記
-        target_work = None
-        if work_title:
-            for w in works:
-                if w.get("title") == work_title.strip():
-                    target_work = w
-                    break
-
-        async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (guild_id, faction_name)) as cur:
-            f_row = await cur.fetchone()
-
-            if not f_row or f_row[0] <= 0:
-                return gross_amount, 0, ""
-            tax_rate = f_row[0]
-
-        tax_amount = int(gross_amount * tax_rate)
-        net_amount = gross_amount - tax_amount
-
-        if tax_amount <= 0:
-            return gross_amount, 0, ""
-
-        # 扣稅款注入陣營金庫，並增加個人貢獻度
-        await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, faction_name))
-        await db.execute("""
-            INSERT INTO faction_members (guild_id, faction_name, char_name, contribution)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
-        """, (guild_id, faction_name, char_name, tax_amount, tax_amount))
-        await db.commit()
-
-    tax_msg = f"\n🏛️ **陣營抽成**：所屬陣營【{faction_name}】抽取 {int(tax_rate * 100)}% 通告稅款 **${tax_amount:,}** 注入陣營金庫（個人貢獻增加）！"
-    return net_amount, tax_amount, tax_msg
-
-# -------------------- 定時背景任務 --------------------
-@tasks.loop(hours=24)
-async def daily_interest():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT DISTINCT guild_id FROM characters") as cur:
-            guild_rows = await cur.fetchall()
-
-        for (g_id,) in guild_rows:
-            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'interest_rate'", (g_id,)) as cur:
-                row = await cur.fetchone()
-                rate = float(row[0]) if row else 0.05
-
-            await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
-        await db.commit()
-
-@tasks.loop(hours=1)
-async def check_ticket_expiration():
-    now = time.time()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
-            expired = await cur.fetchall()
-
-        for record in expired:
-            rec_id, c_name, u_id, g_id, r_id, t_name = record
-            guild = bot.get_guild(g_id)
-            if guild:
-                member = guild.get_member(u_id)
-                role = guild.get_role(r_id)
-                if member and role:
-                    try:
-                        await member.remove_roles(role, reason="門票時效已過，自動遣返收回身分組")
-                    except Exception:
-                        pass
-
-            ban_until = now + (300 * 3600)
-            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE guild_id = ? AND name = ?", (ban_until, g_id, c_name))
-            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
-
-        await db.commit()
-
-@tasks.loop(hours=24)
-async def monthly_age_up():
-    now = time.time()
-    one_month = 30 * 86400
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT guild_id, name, age, created_at FROM characters") as cur:
-            rows = await cur.fetchall()
-            for g_id, name, age, created_at in rows:
-                months_passed = int((now - created_at) // one_month)
-                if months_passed > 0:
-                    await db.execute(
-                        "UPDATE characters SET age = age + 1, created_at = created_at + ? WHERE guild_id = ? AND name = ?",
-                        (one_month, g_id, name)
-                    )
-        await db.commit()
-
-# -------------------- 啟動與全域同步 --------------------
-@bot.event
-async def on_ready():
-    await init_db()
-    if not daily_interest.is_running():
-        daily_interest.start()
-    if not monthly_age_up.is_running():
-        monthly_age_up.start()
-    if not check_ticket_expiration.is_running():
-        check_ticket_expiration.start()
-
-    try:
-        synced = await bot.tree.sync()
-        print(f"====================================")
-        print(f"🎉 成功同步了 {len(synced)} 個 Slash 指令！")
-        for cmd in synced:
-            print(f"📌 指令: /{cmd.name}")
-        print(f"====================================")
-    except Exception as e:
-        print(f"❌ 同步指令失敗: {e}")
-
-    print(f"流光城系統已就緒：{bot.user}")
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-if TOKEN:
+try:
     bot.run(TOKEN)
-else:
-    print("⚠️ 找不到 DISCORD_TOKEN 環境變數，請先配置後再執行。")
+except Exception as e:
+    print(f"❌ 機器人啟動崩潰: {e}")
+    traceback.print_exc()
+    sys.exit(1)
