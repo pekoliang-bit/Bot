@@ -2776,3 +2776,109 @@ async def process_faction_tax(guild_id: int, char_name: str, gross_amount: int, 
         async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (guild_id, faction_name)) as cur:
             f_row = await cur.fetchone()
 
+            if not f_row or f_row[0] <= 0:
+                return gross_amount, 0, ""
+            tax_rate = f_row[0]
+
+        tax_amount = int(gross_amount * tax_rate)
+        net_amount = gross_amount - tax_amount
+
+        if tax_amount <= 0:
+            return gross_amount, 0, ""
+
+        # 扣稅款注入陣營金庫，並增加個人貢獻度
+        await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (tax_amount, guild_id, faction_name))
+        await db.execute("""
+            INSERT INTO faction_members (guild_id, faction_name, char_name, contribution)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, faction_name, char_name) DO UPDATE SET contribution = contribution + ?
+        """, (guild_id, faction_name, char_name, tax_amount, tax_amount))
+        await db.commit()
+
+    tax_msg = f"\n🏛️ **陣營抽成**：所屬陣營【{faction_name}】抽取 {int(tax_rate * 100)}% 通告稅款 **${tax_amount:,}** 注入陣營金庫（個人貢獻增加）！"
+    return net_amount, tax_amount, tax_msg
+
+# -------------------- 定時背景任務 --------------------
+@tasks.loop(hours=24)
+async def daily_interest():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters") as cur:
+            guild_rows = await cur.fetchall()
+
+        for (g_id,) in guild_rows:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'interest_rate'", (g_id,)) as cur:
+                row = await cur.fetchone()
+                rate = float(row[0]) if row else 0.05
+
+            await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
+        await db.commit()
+
+@tasks.loop(hours=1)
+async def check_ticket_expiration():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
+            expired = await cur.fetchall()
+
+        for record in expired:
+            rec_id, c_name, u_id, g_id, r_id, t_name = record
+            guild = bot.get_guild(g_id)
+            if guild:
+                member = guild.get_member(u_id)
+                role = guild.get_role(r_id)
+                if member and role:
+                    try:
+                        await member.remove_roles(role, reason="門票時效已過，自動遣返收回身分組")
+                    except Exception:
+                        pass
+
+            ban_until = now + (300 * 3600)
+            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE guild_id = ? AND name = ?", (ban_until, g_id, c_name))
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
+
+        await db.commit()
+
+@tasks.loop(hours=24)
+async def monthly_age_up():
+    now = time.time()
+    one_month = 30 * 86400
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT guild_id, name, age, created_at FROM characters") as cur:
+            rows = await cur.fetchall()
+            for g_id, name, age, created_at in rows:
+                months_passed = int((now - created_at) // one_month)
+                if months_passed > 0:
+                    await db.execute(
+                        "UPDATE characters SET age = age + 1, created_at = created_at + ? WHERE guild_id = ? AND name = ?",
+                        (one_month, g_id, name)
+                    )
+        await db.commit()
+
+# -------------------- 啟動與全域同步 --------------------
+@bot.event
+async def on_ready():
+    await init_db()
+    if not daily_interest.is_running():
+        daily_interest.start()
+    if not monthly_age_up.is_running():
+        monthly_age_up.start()
+    if not check_ticket_expiration.is_running():
+        check_ticket_expiration.start()
+
+    try:
+        synced = await bot.tree.sync()
+        print(f"====================================")
+        print(f"🎉 成功同步了 {len(synced)} 個 Slash 指令！")
+        for cmd in synced:
+            print(f"📌 指令: /{cmd.name}")
+        print(f"====================================")
+    except Exception as e:
+        print(f"❌ 同步指令失敗: {e}")
+
+    print(f"流光城系統已就緒：{bot.user}")
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("⚠️ 找不到 DISCORD_TOKEN 環境變數，請先配置後再執行。")
