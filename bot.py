@@ -1812,8 +1812,43 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
 @app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟名錄大廳")
 async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
     g_id = interaction.guild_id
+    await interaction.response.defer(ephemeral=True)
+
     if npc名稱:
-        await view_char_cmd(interaction, npc名稱)
+        target_name = npc名稱.strip()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT age, gender, job, faction, tags, relationship_status, cp_info, cash, bank, stats, rank, company_id, is_npc FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+                row = await cur.fetchone()
+
+            if not row:
+                await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+                return
+
+            age, gender, job, faction, tags, rel_status, cp_json, cash, bank, stats_json, rank_name, comp_id, is_npc_val = row
+            async with db.execute("SELECT asset_type, asset_name, price FROM personal_assets WHERE guild_id = ? AND owner_name = ?", (g_id, target_name)) as a_cur:
+                assets = await a_cur.fetchall()
+            async with db.execute("SELECT name, type_name FROM companies WHERE guild_id = ? AND creator_name = ?", (g_id, target_name)) as c_cur:
+                comps = await c_cur.fetchall()
+
+        cp_obj = json.loads(cp_json) if cp_json else {}
+        cp_text = f"💕 CP: **{cp_obj.get('target')}** ({cp_obj.get('relation')})" if cp_obj.get("target") else "無"
+
+        embed = discord.Embed(title=f"🪪【{target_name}】官方 NPC 資料面板", color=0x9B59B6)
+        embed.add_field(name="基本身分", value=f"• 年齡/性別: {age}歲 / {gender}\n• 身分/職業: {job}\n• 勢力: {faction}\n• 特質標籤: `{tags or '無'}`", inline=True)
+        embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
+        embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 現金: ${cash:,} ｜ 銀行: ${bank:,}", inline=False)
+
+        asset_lines = [f"• [{a[0]}] {a[1]} (${a[2]:,})" for a in assets]
+        if comps:
+            for c in comps: asset_lines.append(f"• [名下公司] {c[0]} ({c[1]})")
+        embed.add_field(name="🚗 房產、車輛與公司資產", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
+
+        stats = json.loads(stats_json) if stats_json else {}
+        stat_texts = [f"{k}: **{v}**" for k, v in stats.items()]
+        embed.add_field(name="📊 核心數值", value=" ｜ ".join(stat_texts[:10]) if stat_texts else "尚未登記任何數值", inline=False)
+
+        view = ProfileMainView(target_name, g_id)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1821,11 +1856,11 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
             all_npcs = await cur.fetchall()
 
     if not all_npcs:
-        await interaction.response.send_message("📋 目前本伺服器尚未登記任何官方 NPC！", ephemeral=True)
+        await interaction.followup.send("📋 目前本伺服器尚未登記任何官方 NPC！", ephemeral=True)
         return
 
-    embed = discord.Embed(title="👥 流光城官方 NPC 名錄大廳", description="請點選下方選單調閱各 NPC 個人檔案：", color=0x9B59B6)
-    for npc in all_npcs:
+    embed = discord.Embed(title="👥 官方 NPC 名錄大廳", description="請點選下方選單調閱各 NPC 個人檔案：", color=0x9B59B6)
+    for npc in all_npcs[:15]:
         embed.add_field(name=f"👤 {npc[0]} ({npc[1]}歲 / {npc[2]})", value=f"身分：{npc[3]}", inline=True)
 
     class NPCDropdown(discord.ui.Select):
@@ -1838,7 +1873,7 @@ async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
 
     view = discord.ui.View()
     view.add_item(NPCDropdown())
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 # -------------------- 指令：/數值登記 --------------------
 @bot.tree.command(name="數值登記", description="為角色或 NPC 登記/微調數值（支援一次多項調整）")
