@@ -611,96 +611,85 @@ async def crowd_npc_fluctuation_task():
 
         await db.commit()
 
-# -------------------- 寵物狀態每日檢測（扣健康值與壽命檢查） --------------------
+# -------------------- 寵物狀態每日檢測（連動時間流速） --------------------
 @tasks.loop(hours=24)
 async def pet_health_decay_task():
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 每日自然扣 5 點健康
         await db.execute("UPDATE pets SET health = MAX(0, health - 5) WHERE status != '已故'")
-        
-        async with db.execute("SELECT id, guild_id, owner_name, pet_name, lifespan_days, bought_at, health FROM pets WHERE status != '已故'") as cur:
-            all_pets = await cur.fetchall()
 
-        for p_id, g_id, owner, pet_name, lifespan, bought_at, hp in all_pets:
-            days_passed = (now - bought_at) / 86400.0
-            if hp <= 0 or days_passed >= lifespan:
-                await db.execute("UPDATE pets SET status = '已故', funeral_pending = 1 WHERE id = ?", (p_id,))
-                
-                async with db.execute("SELECT user_id FROM characters WHERE guild_id = ? AND name = ?", (g_id, owner)) as u_cur:
-                    u_row = await u_cur.fetchone()
-                
-                if u_row:
-                    user = bot.get_user(u_row[0])
-                    if user:
-                        try:
-                            msg = (
-                                f"🕊️ **【寵物離世訃告】**\n"
-                                f"親愛的 **{owner}**，你的愛寵【**{pet_name}**】走到了生命的終點，悄悄回汪喵星球了……\n\n"
-                                f"是否願意為牠舉辦一場告別喪禮？\n"
-                                f"若選擇舉辦，請撰寫一篇喪禮哀悼文章，並在該文章中 `@機器人`。\n"
-                                f"結算時將為你賦予大量路人緣與死忠粉絲，並有機會獲得動物公益大使工作邀約。"
-                            )
-                            await user.send(msg)
-                        except Exception:
-                            pass
-        await db.commit()
+        # 2. 依伺服器時間流速檢測自然壽命
+        async with db.execute("SELECT DISTINCT guild_id FROM pets WHERE status != '已故'") as g_cur:
+            guilds = await g_cur.fetchall()
 
+        for (g_id,) in guilds:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'days_per_game_year'", (g_id,)) as s_cur:
+                s_row = await s_cur.fetchone()
+                days_per_year = int(s_row[0]) if s_row else 30
 
-# -------------------- 定時背景任務 --------------------
-@tasks.loop(hours=24)
-async def daily_interest():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT DISTINCT guild_id FROM characters") as cur:
-            guild_rows = await cur.fetchall()
+            async with db.execute("SELECT id, owner_name, pet_name, lifespan_days, bought_at, health FROM pets WHERE guild_id = ? AND status != '已故'", (g_id,)) as cur:
+                all_pets = await cur.fetchall()
 
-        for (g_id,) in guild_rows:
-            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'interest_rate'", (g_id,)) as cur:
-                row = await cur.fetchone()
-                rate = float(row[0]) if row else 0.05
+            for p_id, owner, pet_name, lifespan_years_val, bought_at, hp in all_pets:
+                # 若先前存的是天數，則以 365 換算回年數，再乘上新流速天數；若存的是年數則直接相乘
+                real_years = (lifespan_days / 365.0) if lifespan_days > 100 else lifespan_days
+                max_real_days = real_years * days_per_year
+                days_passed = (now - bought_at) / 86400.0
 
-            await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
-        await db.commit()
-
-@tasks.loop(hours=1)
-async def check_ticket_expiration():
-    now = time.time()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
-            expired = await cur.fetchall()
-
-        for record in expired:
-            rec_id, c_name, u_id, g_id, r_id, t_name = record
-            guild = bot.get_guild(g_id)
-            if guild:
-                member = guild.get_member(u_id)
-                role = guild.get_role(r_id)
-                if member and role:
-                    try:
-                        await member.remove_roles(role, reason="大地圖門票逾期未歸，系統強制遣返")
-                    except Exception:
-                        pass
-
-            ban_until = now + (300 * 3600)
-            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE guild_id = ? AND name = ?", (ban_until, g_id, c_name))
-            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
+                if hp <= 0 or days_passed >= max_real_days:
+                    await db.execute("UPDATE pets SET status = '已故', funeral_pending = 1 WHERE id = ?", (p_id,))
+                    
+                    async with db.execute("SELECT user_id FROM characters WHERE guild_id = ? AND name = ?", (g_id, owner)) as u_cur:
+                        u_row = await u_cur.fetchone()
+                    
+                    if u_row:
+                        user = bot.get_user(u_row[0])
+                        if user:
+                            try:
+                                msg = (
+                                    f"🕊️ **【寵物離世訃告】**\n"
+                                    f"親愛的 **{owner}**，你的愛寵【**{pet_name}**】走到了生命的終點，悄悄回汪喵星球了……\n\n"
+                                    f"是否願意為牠舉辦一場告別喪禮？\n"
+                                    f"若選擇舉辦，請撰寫一篇喪禮哀悼文章，並在該文章中 `@機器人`。\n"
+                                    f"結算時將為你賦予大量路人緣與死忠粉絲，並有機會獲得動物公益大使工作邀約。"
+                                )
+                                await user.send(msg)
+                            except Exception:
+                                pass
 
         await db.commit()
 
+
+# -------------------- 定時背景任務（角色動態長大） --------------------
 @tasks.loop(hours=24)
 async def monthly_age_up():
     now = time.time()
-    one_month = 30 * 86400
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT guild_id, name, age, created_at FROM characters") as cur:
-            rows = await cur.fetchall()
-            for g_id, name, age, created_at in rows:
-                months_passed = int((now - created_at) // one_month)
-                if months_passed > 0:
-                    await db.execute(
-                        "UPDATE characters SET age = age + 1, created_at = created_at + ? WHERE guild_id = ? AND name = ?",
-                        (one_month, g_id, name)
-                    )
+        async with db.execute("SELECT DISTINCT guild_id FROM characters") as g_cur:
+            guilds = await g_cur.fetchall()
+
+        for (g_id,) in guilds:
+            # 讀取該伺服器的時間倍率（預設 30 天 = 1 年）
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'days_per_game_year'", (g_id,)) as s_cur:
+                s_row = await s_cur.fetchone()
+                days_per_year = int(s_row[0]) if s_row else 30
+
+            cycle_seconds = days_per_year * 86400
+
+            async with db.execute("SELECT name, age, created_at FROM characters WHERE guild_id = ?", (g_id,)) as cur:
+                rows = await cur.fetchall()
+                for name, age, created_at in rows:
+                    years_passed = int((now - created_at) // cycle_seconds)
+                    if years_passed > 0:
+                        await db.execute("""
+                            UPDATE characters 
+                            SET age = age + ?, created_at = created_at + ? 
+                            WHERE guild_id = ? AND name = ?", 
+                        """, (years_passed, years_passed * cycle_seconds, g_id, name))
+
         await db.commit()
+
 # -------------------- 字數統計與監聽 --------------------
 def count_text_words(text: str, mode: str) -> int:
     clean = re.sub(r"<@!?\d+>", "", text).strip()
@@ -4038,6 +4027,36 @@ async def buy_pet_cmd(
         f"• 預估壽命：**{lifespan_years} 年**\n"
         f"• 初始健康值：**500/500**（每天會自然扣減 5 點，請記得於商城採購專屬飼料照料）！"
     )
+    # -------------------- 指令：/時間流動設定 --------------------
+@bot.tree.command(name="時間流動設定", description="【管理員專用】調整流光城遊戲內時間流速（影響角色長大週期與寵物壽命換算）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    遊戲一年對應現實天數="現實過幾天等於遊戲過一年？預設為 30 天（填純整數，例如: 30、15、7）"
+)
+async def set_time_flow(interaction: discord.Interaction, 遊戲一年對應現實天數: int):
+    g_id = interaction.guild_id
+    if 遊戲一年對應現實天數 <= 0:
+        await interaction.response.send_message("❌ 現實天數必須大於 0！", ephemeral=True)
+        return
+
+    days = 遊戲一年對應現實天數
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'days_per_game_year', ?)
+            ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
+        """, (g_id, str(days), str(days)))
+        await db.commit()
+
+    embed = discord.Embed(title="⏳ 流光城時間齒輪已調整", color=0x9B59B6)
+    embed.description = (
+        f"全城時間流速已更新完畢！\n\n"
+        f"• **當前流速標準**：現實 **{days} 天** ＝ 遊戲內 **1 年**\n"
+        f"• **角色成長影響**：所有角色與 NPC 每隔 **{days} 天** 自然增長 1 歲\n"
+        f"• **寵物壽命連動**：預期壽命將以每 1 歲折合 **{days} 天** 現實天數動態判定\n"
+    )
+    embed.set_footer(text="提示：調整後即刻生效，既有寵物的壽命將自動以新比率重新校正。")
+    await interaction.response.send_message(embed=embed)
+
 # -------------------- 清理與同步指令 --------------------
 @bot.command()
 @commands.has_permissions(administrator=True)
