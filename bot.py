@@ -604,7 +604,10 @@ def count_text_words(text: str, mode: str) -> int:
         return len(re.sub(r"\s+", "", clean))
 
 @bot.event
-async def on_message(message: discord.Message):
+async def on_message(message):
+    if message.author.bot:
+        return
+
             # 檢查是否有等待喪禮的寵物
         async with db.execute("SELECT id, pet_name FROM pets WHERE guild_id = ? AND owner_name = (SELECT name FROM characters WHERE user_id = ? LIMIT 1) AND funeral_pending = 1", (g_id, message.author.id)) as p_cur:
             pending_pet = await p_cur.fetchone()
@@ -3963,9 +3966,12 @@ async def sync(ctx):
 @bot.event
 async def on_ready():
     await init_db()
+    await sync_default_tags()
+
     if not daily_interest.is_running(): daily_interest.start()
     if not monthly_age_up.is_running(): monthly_age_up.start()
     if not check_ticket_expiration.is_running(): check_ticket_expiration.start()
+    if not pet_health_decay_task.is_running(): pet_health_decay_task.start()
 
     try:
         synced = await bot.tree.sync()
