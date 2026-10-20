@@ -1798,21 +1798,21 @@ async def company_cmd(interaction: discord.Interaction):
         await interaction.response.send_message(f"ℹ️ 角色 **{my_char}** 目前名下無自主創立的公司，暫無法開啟商業管理後台。", ephemeral=True)
 
 
-# -------------------- 指令：/商店與物品管理（管理員設定官方商品與門票） --------------------
-@bot.tree.command(name="商店與物品管理", description="【管理員專用】上架、修改商城商品、資產或門票身分組")
+# -------------------- 指令：/商店與物品管理（支援官方商品、門票與寵物動態上架） --------------------
+@bot.tree.command(name="商店與物品管理", description="【管理員專用】上架、修改商城商品、門票身分組或新增寵物品種")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(操作=[
-    app_commands.Choice(name="上架/新增商品", value="add"),
+    app_commands.Choice(name="上架/新增商品或寵物", value="add"),
     app_commands.Choice(name="修改既有商品", value="edit"),
-    app_commands.Choice(name="下架商品", value="remove")
+    app_commands.Choice(name="下架商品或寵物", value="remove")
 ])
 @app_commands.describe(
     操作="選擇執行的動作",
-    商店="商品歸屬商店（例如: 官方商城, 票務系統, 藥品專櫃）",
-    商品名="物品名稱",
+    商店="商品歸屬商店（填［寵物］或［寵物中心］可直接上架寵物品種；或填 官方商城、票務系統 等）",
+    商品名="物品或寵物品種名稱（例如: 布偶貓、柴犬、優質貓糧）",
     價格="售價 (純數字)",
-    簡介="商品介紹",
-    增加數值="使用時加成的數值 (例如: 容貌+10、實力+5)",
+    簡介="商品介紹或寵物描述",
+    增加數值="［道具］加成數值(如: 容貌+10) ｜ ［寵物］填預期壽命年數(純數字，如: 15)",
     增加好感="贈予 NPC 時額外增加的好感度點數",
     可否使用="1 代表可使用生效，0 代表僅供收藏",
     是否為門票="是否為大地圖傳送門票",
@@ -1837,27 +1837,41 @@ async def manage_shop_items(
     s_name = 商店.strip()
     role_id = 對應地圖身分組.id if (是否為門票 and 對應地圖身分組) else 0
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id FROM shop_items WHERE guild_id = ? AND shop_name = ? AND name = ?", (g_id, s_name, i_name)) as cur:
-            exists = await cur.fetchone()
+    is_pet_shop = s_name in ["寵物", "寵物中心", "寵物店"]
 
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 處理下架
         if op == "remove":
+            async with db.execute("SELECT id FROM shop_items WHERE guild_id = ? AND shop_name = ? AND name = ?", (g_id, s_name, i_name)) as cur:
+                exists = await cur.fetchone()
+
             if not exists:
-                await interaction.response.send_message(f"❌ 查無【{s_name}】的商品【{i_name}】！", ephemeral=True)
+                await interaction.response.send_message(f"❌ 查無【{s_name}】的項目【{i_name}】！", ephemeral=True)
                 return
+
             await db.execute("DELETE FROM shop_items WHERE id = ?", (exists[0],))
+            if is_pet_shop:
+                await db.execute("DELETE FROM available_pets WHERE guild_id = ? AND display_name = ?", (g_id, i_name))
+
             await db.commit()
             await interaction.response.send_message(f"🗑️ 已成功將【{i_name}】從【{s_name}】下架！", ephemeral=True)
             return
 
+        # 價格防呆
         if 價格 <= 0:
-            await interaction.response.send_message("❌ 商品價格必須大於 0！", ephemeral=True)
+            await interaction.response.send_message("❌ 販售價格必須大於 0！", ephemeral=True)
             return
+
+        # 2. 上架或修改
+        async with db.execute("SELECT id FROM shop_items WHERE guild_id = ? AND shop_name = ? AND name = ?", (g_id, s_name, i_name)) as cur:
+            exists = await cur.fetchone()
 
         if op == "add":
             if exists:
-                await interaction.response.send_message(f"❌ 【{s_name}】已有同名商品【{i_name}】！若要調整請選修改。", ephemeral=True)
+                await interaction.response.send_message(f"❌ 【{s_name}】已有同名項目【{i_name}】！若要調整請選修改。", ephemeral=True)
                 return
+
+            # 上架至商城通用表
             await db.execute("""
                 INSERT INTO shop_items (guild_id, shop_name, name, price, description, stat_bonus, affinity_bonus, usable, target_role_id, seller)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '官方')
@@ -1865,23 +1879,46 @@ async def manage_shop_items(
             action_str = "上架"
         else:
             if not exists:
-                await interaction.response.send_message(f"❌ 查無欲修改的商品【{i_name}】！", ephemeral=True)
+                await interaction.response.send_message(f"❌ 查無欲修改的項目【{i_name}】！", ephemeral=True)
                 return
+
             await db.execute("""
                 UPDATE shop_items SET price = ?, description = ?, stat_bonus = ?, affinity_bonus = ?, usable = ?, target_role_id = ?
                 WHERE id = ?
             """, (價格, 簡介.strip(), 增加數值.strip(), 增加好感, 可否使用, role_id, exists[0]))
             action_str = "修改"
 
+        # 若是寵物類別，自動同步至寵物目錄資料庫 available_pets
+        pet_extra_info = ""
+        if is_pet_shop:
+            # 自動提取寵物種類 (關鍵字判定)
+            pet_type = "其他"
+            for t in ["貓", "狗", "兔", "鳥", "鼠", "狐", "寵物"]:
+                if t in i_name:
+                    pet_type = t
+                    break
+
+            # 壽命解析 (預設 10 年)
+            lifespan = 10
+            if 增加數值.strip().isdigit():
+                lifespan = int(增加數值.strip())
+
+            await db.execute("""
+                INSERT INTO available_pets (guild_id, pet_type, display_name, lifespan_years, price)
+                VALUES (?, ?, ?, ?, ?)
+            """, (g_id, pet_type, i_name, lifespan, 價格))
+            pet_extra_info = f"\n🐾 **寵物屬性設定**：種類 `【{pet_type}】` ｜ 預期壽命 `【{lifespan} 年】`"
+
         await db.commit()
 
     ticket_text = f"（🎫 綁定身分組: {對應地圖身分組.mention}）" if role_id > 0 else ""
     await interaction.response.send_message(
-        f"✅ 成功{action_str}商品！\n"
+        f"✅ 成功{action_str}！\n"
         f"🏪 所屬專區：【{s_name}】\n"
-        f"📦 商品名稱：**{i_name}** ｜ 價格：**${價格:,}** {ticket_text}\n"
-        f"✨ 數值效果：`{增加數值 or '無'}` ｜ 好感加成：`+{增加好感}`"
+        f"📦 名稱：**{i_name}** ｜ 價格：**${價格:,}** {ticket_text}\n"
+        f"📝 簡介：`{簡介.strip()}`{pet_extra_info}"
     )
+
 
 
 # -------------------- 指令：/商城（支援官方、二手與名下公司專賣店購物收益） --------------------
