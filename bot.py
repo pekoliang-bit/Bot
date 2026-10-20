@@ -291,6 +291,75 @@ async def init_db():
             )
         """)
         await db.commit()
+        # 18. 大眾路人相冊與姓名資源庫
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS crowd_photos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                image_url TEXT,
+                gender TEXT DEFAULT '通用',
+                used INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS crowd_names (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                region TEXT,       -- '東方' 或 '西方'
+                name_type TEXT,    -- 'surname' (姓氏) 或 'firstname' (名字)
+                gender TEXT DEFAULT '通用',
+                val TEXT
+            )
+        """)
+        # 擴充 characters 欄位（國籍、身高）
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN nationality TEXT DEFAULT '本國'")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN height INTEGER DEFAULT 170")
+        except Exception:
+            pass
+# -------------------- 每 48 小時：全體路人動態行情與數值浮動 --------------------
+@tasks.loop(hours=48)
+async def crowd_npc_fluctuation_task():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters WHERE is_npc = 3") as cur:
+            guild_rows = await cur.fetchall()
+
+        for (g_id,) in guild_rows:
+            async with db.execute("SELECT key, value FROM system_settings WHERE guild_id = ?", (g_id,)) as cur:
+                settings = dict(await cur.fetchall())
+
+            mode = settings.get("npc_fluct_mode", "percent") # 'percent' 或 'fixed'
+            rate = float(settings.get("npc_fluct_rate", "0.05"))
+            include_money = settings.get("npc_fluct_money", "1") == "1"
+            max_cap = int(settings.get("npc_fluct_cap", "3000"))
+
+            async with db.execute("SELECT name, cash, bank, stats FROM characters WHERE guild_id = ? AND is_npc = 3", (g_id,)) as c_cur:
+                npcs = await c_cur.fetchall()
+
+            for n_name, cash, bank, stats_json in npcs:
+                stats = json.loads(stats_json) if stats_json else {}
+                for k in stats.keys():
+                    if mode == "percent":
+                        delta_pct = random.uniform(-rate, rate)
+                        stats[k] = max(10, min(max_cap, int(stats[k] * (1 + delta_pct))))
+                    else:
+                        delta_val = random.randint(-int(rate), int(rate))
+                        stats[k] = max(10, min(max_cap, stats[k] + delta_val))
+
+                new_cash, new_bank = cash, bank
+                if include_money:
+                    m_rate = random.uniform(-0.06, 0.06)
+                    new_cash = max(100, int(cash * (1 + m_rate)))
+                    new_bank = max(500, int(bank * (1 + m_rate)))
+
+                await db.execute("""
+                    UPDATE characters SET stats = ?, cash = ?, bank = ? WHERE guild_id = ? AND name = ?
+                """, (json.dumps(stats, ensure_ascii=False), new_cash, new_bank, g_id, n_name))
+
+        await db.commit()
 
 # -------------------- 定時背景任務 --------------------
 @tasks.loop(hours=24)
@@ -2786,7 +2855,7 @@ async def admin_overview(interaction: discord.Interaction):
             await view_char_cmd(inter, self.values[0])
 
     embed = discord.Embed(
-        title="📑 流光城全體名冊總覽 (管理員後台)",
+        title="📑 全體名冊總覽 (管理員後台)",
         description=f"目前伺服器共計建檔：**{len(all_entities)}** 個角色與 NPC",
         color=0x34495E
     )
@@ -2911,6 +2980,306 @@ async def admin_reward(
     await check_and_update_rank(g_id, target_name, interaction.channel)
     detail = " ｜ ".join(reward_msgs) if reward_msgs else "無實質資產變動"
     await interaction.response.send_message(f"🎁 管理員已成功為【{target_name}】發放資源：\n{detail}")
+# -------------------- 指令：/路人資源補給 --------------------
+@bot.tree.command(name="路人資源補給", description="【管理員專用】批次新增路人專用相片與東西方姓名庫")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(地區分類=[
+    app_commands.Choice(name="東方 (姓在名前，如: 許國偉)", value="東方"),
+    app_commands.Choice(name="西方 (名•姓，如: 安妮•斯圖爾特)", value="西方")
+])
+@app_commands.choices(適用性別=[
+    app_commands.Choice(name="通用", value="通用"),
+    app_commands.Choice(name="男", value="男"),
+    app_commands.Choice(name="女", value="女")
+])
+@app_commands.describe(
+    地區分類="選擇姓名所屬體系",
+    適用性別="這些姓名或照片主要適用的性別",
+    新增照片檔案="可直接上傳一張相片入庫",
+    姓氏串="多個姓氏以空白隔開 (例如: 許 黃 張 李 或 史密斯 斯圖爾特)",
+    名字串="多個名字以空白隔開 (例如: 國偉 小艾 安妮 巧)",
+    貼文或相冊連結="選填：貼上 Discord 討論串/訊息連結，自動爬取其中的圖片與文字"
+)
+async def supply_crowd_resources(
+    interaction: discord.Interaction,
+    地區分類: app_commands.Choice[str],
+    適用性別: app_commands.Choice[str],
+    新增照片檔案: discord.Attachment = None,
+    姓氏串: str = None,
+    名字串: str = None,
+    貼文或相冊連結: str = None
+):
+    g_id = interaction.guild_id
+    await interaction.response.defer(ephemeral=True)
+
+    region = 地區分類.value
+    gen = 適用性別.value
+    added_photos = 0
+    added_surnames = 0
+    added_firstnames = 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 處理直接上傳的單張相片
+        if 新增照片檔案:
+            await db.execute("INSERT INTO crowd_photos (guild_id, image_url, gender) VALUES (?, ?, ?)", (g_id, 新增照片檔案.url, gen))
+            added_photos += 1
+
+        # 2. 處理外部連結（抓取 Discord 貼文內的所有圖片附件與文字）
+        if 貼文或相冊連結:
+            link_match = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 貼文或相冊連結)
+            if link_match:
+                c_id = int(link_match.group(1))
+                m_id = int(link_match.group(2)) if link_match.group(2) else None
+                try:
+                    ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
+                    messages = []
+                    if isinstance(ch, discord.Thread):
+                        async for msg in ch.history(limit=20):
+                            messages.append(msg)
+                    elif m_id:
+                        messages.append(await ch.fetch_message(m_id))
+
+                    for m in messages:
+                        # 抓取圖片附件
+                        for att in m.attachments:
+                            if any(att.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                                await db.execute("INSERT INTO crowd_photos (guild_id, image_url, gender) VALUES (?, ?, ?)", (g_id, att.url, gen))
+                                added_photos += 1
+                        # 若內容有寫 姓氏: 或 名字:
+                        s_m = re.search(r"姓氏[^\n\r:：]*[:：]([^\n\r]+)", m.content)
+                        if s_m:
+                            for s in s_m.group(1).split():
+                                await db.execute("INSERT INTO crowd_names (guild_id, region, name_type, gender, val) VALUES (?, ?, 'surname', ?, ?)", (g_id, region, gen, s.strip()))
+                                added_surnames += 1
+                        f_m = re.search(r"名字[^\n\r:：]*[:：]([^\n\r]+)", m.content)
+                        if f_m:
+                            for f in f_m.group(1).split():
+                                await db.execute("INSERT INTO crowd_names (guild_id, region, name_type, gender, val) VALUES (?, ?, 'firstname', ?, ?)", (g_id, region, gen, f.strip()))
+                                added_firstnames += 1
+                except Exception:
+                    pass
+
+        # 3. 處理文字輸入欄位的姓氏與名字
+        if 姓氏串:
+            for s in re.split(r"[,，\s]+", 姓氏串.strip()):
+                if s:
+                    await db.execute("INSERT INTO crowd_names (guild_id, region, name_type, gender, val) VALUES (?, ?, 'surname', ?, ?)", (g_id, region, gen, s))
+                    added_surnames += 1
+
+        if 名字串:
+            for f in re.split(r"[,，\s]+", 名字串.strip()):
+                if f:
+                    await db.execute("INSERT INTO crowd_names (guild_id, region, name_type, gender, val) VALUES (?, ?, 'firstname', ?, ?)", (g_id, region, gen, f))
+                    added_firstnames += 1
+
+        # 查詢目前未使用的照片剩餘庫存
+        async with db.execute("SELECT COUNT(*) FROM crowd_photos WHERE guild_id = ? AND used = 0", (g_id,)) as cur:
+            rem_photos = (await cur.fetchone())[0]
+
+        await db.commit()
+
+    embed = discord.Embed(title="📦 大眾路人資源入庫成功", color=0x3498DB)
+    embed.add_field(name="新增成果", value=f"• 照片入庫：**+{added_photos}** 張\n• 姓氏入庫：**+{added_surnames}** 個\n• 名字入庫：**+{added_firstnames}** 個", inline=False)
+    embed.add_field(name="當前相冊總庫存", value=f"剩餘 **{rem_photos}** 張未使用相片", inline=True)
+    if rem_photos <= 5:
+        embed.set_footer(text="⚠️ 注意：未使用的相冊庫存已不足 5 張，請盡快補充！")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+WESTERN_NATIONS = ["美國", "英國", "法國", "德國", "義大利", "俄羅斯", "西班牙", "加拿大", "澳大利亞", "瑞典", "波蘭", "捷克", "冰島", "丹麥", "希臘", "愛爾蘭", "紐西蘭", "葡萄牙", "比利時", "瑞士",  "挪威", "芬蘭", "荷蘭", "匈牙利", "羅馬尼亞", "保加利亞", "立陶宛", "烏克蘭"]
+EASTERN_NATIONS = ["中國", "日本", "韓國", "新加坡", "馬來西亞", "泰國", "越南", "菲律賓", "蒙古國", "印度", "緬甸", "馬爾地夫", "杜拜", "土耳其", "尼泊爾", "印尼", "汶萊", "柬埔寨", "卡達", "阿拉伯", "哈薩克", "不丹", "斯里蘭卡", "孟加拉", "寮國", "東帝汶"]
+SOUTH_AMERICAN_NATIONS = ["巴西", "阿根廷", "智利", "哥倫比亞", "秘魯", "烏拉圭", "墨西哥","委內瑞拉", "巴拉圭", "蓋亞那", "玻利維亞", "厄瓜多"]
+AFRICAN_NATIONS = ["埃及", "南非", "奈及利亞", "肯亞", "摩洛哥", "衣索比亞","象牙海岸", "剛果", "喀麥隆", "維德角", "獅子山", "尼日", "布基納法索", "賴比瑞亞"]
+CROWD_JOBS = ["演員", "特技演員", "模特", "歌手", "偶像", "綜藝咖", "短劇演員", "舞者", "網紅", "星二代", "經紀人", "導演"]
+CROWD_TAGS_POOL = ["初戀臉", "厭世感", "舞台匠人", "釣系", "全能ACE", "天籟蜜嗓", "極致反差", "低音砲", "古典氣質", "漫撕男", "高嶺之花", "元氣犬系"]
+CROWD_RELATIONS = ["單身", "單身（事業腦）", "單身（前任成群）", "暗戀同台前輩", "地下戀愛中", "曖昧期", "隱婚傳聞中", "私生活混亂", "變態"]
+
+# -------------------- 指令：/大眾路人大量發生中 --------------------
+@bot.tree.command(name="大眾路人大量發生中", description="【管理員專用】從相冊與姓名池全自動抽取並生成路人角")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(體系偏好=[
+    app_commands.Choice(name="隨機混血／全文化混抽", value="random"),
+    app_commands.Choice(name="限定東方風格", value="東方"),
+    app_commands.Choice(name="限定西方風格", value="西方"),
+    app_commands.Choice(name="限定南美風格 (名•姓)", value="南美"),
+    app_commands.Choice(name="限定非洲風格", value="非洲")
+])
+
+@app_commands.choices(性別偏好=[
+    app_commands.Choice(name="隨機性別", value="隨機"),
+    app_commands.Choice(name="男", value="男"),
+    app_commands.Choice(name="女", value="女")
+])
+@app_commands.describe(
+    生成數量="一次生成的路人數量 (預設 1，上限 5)",
+    體系偏好="選擇姓名與國籍文化風格",
+    性別偏好="指定性別或交由系統隨機"
+)
+async def spawn_crowd_batch(
+    interaction: discord.Interaction,
+    生成數量: int = 1,
+    體系偏好: app_commands.Choice[str] = None,
+    性別偏好: app_commands.Choice[str] = None
+):
+    g_id = interaction.guild_id
+    await interaction.response.defer(ephemeral=False)
+    count = max(1, min(5, 生成數量))
+
+    created_list = []
+    low_photo_warn = False
+    rem_photos = 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 取出可用的地位等級標準
+        async with db.execute("SELECT rank_name FROM rank_settings WHERE guild_id = ? ORDER BY rank_order DESC", (g_id,)) as cur:
+            all_ranks = [r[0] for r in await cur.fetchall()]
+        default_rank = all_ranks[0] if all_ranks else "未定級"
+
+        for _ in range(count):
+            # 1. 決定性別
+            if 性別偏好 and 性別偏好.value != "隨機":
+                gen = 性別偏好.value
+            else:
+                gen = random.choice(["男", "女"])
+
+            # 2. 決定文化風格與姓名組合
+            chosen_reg = 體系偏好.value if (體系偏好 and 體系偏好.value != "random") else random.choice(["東方", "西方", "南美", "非洲"])
+
+            # 抓取姓氏
+            async with db.execute("SELECT val FROM crowd_names WHERE guild_id = ? AND region = ? AND name_type = 'surname' AND gender IN (?, '通用') ORDER BY RANDOM() LIMIT 1", (g_id, chosen_reg, gen)) as cur:
+                s_row = await cur.fetchone()
+            # 抓取名字
+            async with db.execute("SELECT val FROM crowd_names WHERE guild_id = ? AND region = ? AND name_type = 'firstname' AND gender IN (?, '通用') ORDER BY RANDOM() LIMIT 1", (g_id, chosen_reg, gen)) as cur:
+                f_row = await cur.fetchone()
+
+            if chosen_reg == "東方":
+                surname = s_row[0] if s_row else random.choice(["沈", "顧", "林", "裴", "許", "江"])
+                firstname = f_row[0] if f_row else random.choice(["星川", "晚寧", "知意", "野", "淮", "瑤"])
+                full_name = f"{surname}{firstname}"
+                nation = random.choice(EASTERN_NATIONS)
+            elif chosen_reg == "南美":
+                surname = s_row[0] if s_row else random.choice(["席爾瓦", "桑托斯", "羅德里奎茲", "費南德茲", "莫拉萊斯"])
+                firstname = f_row[0] if f_row else random.choice(["盧卡斯", "馬特奧", "瓦倫蒂娜", "卡蜜拉", "索菲亞"])
+                full_name = f"{firstname}•{surname}"
+                nation = random.choice(SOUTH_AMERICAN_NATIONS)
+            elif chosen_reg == "非洲":
+                surname = s_row[0] if s_row else random.choice(["奧卡福", "曼德拉", "特拉奧雷", "迪奧普", "哈桑"])
+                firstname = f_row[0] if f_row else random.choice(["阿瑪拉", "贊達", "卡里姆", "法圖", "塔里克"])
+                full_name = f"{firstname}•{surname}" if random.random() > 0.5 else f"{surname}{firstname}"
+                nation = random.choice(AFRICAN_NATIONS)
+            else:
+                surname = s_row[0] if s_row else random.choice(["斯圖爾特", "羅曼諾夫", "卡佩", "溫莎", "布朗"])
+                firstname = f_row[0] if f_row else random.choice(["安妮", "維克多", "伊蓮", "亞瑟", "奧利維亞"])
+                full_name = f"{firstname}•{surname}"
+                nation = random.choice(WESTERN_NATIONS)
+
+            # 檢查重名
+            async with db.execute("SELECT 1 FROM characters WHERE guild_id = ? AND name = ?", (g_id, full_name)) as cur:
+                if await cur.fetchone():
+                    full_name += f"_{random.randint(10, 99)}"
+
+            # 3. 抽取相片（優先匹配該性別或通用）
+            async with db.execute("SELECT id, image_url FROM crowd_photos WHERE guild_id = ? AND used = 0 AND gender IN (?, '通用') ORDER BY RANDOM() LIMIT 1", (g_id, gen)) as cur:
+                p_row = await cur.fetchone()
+
+            img_url = ""
+            if p_row:
+                p_id, img_url = p_row
+                await db.execute("UPDATE crowd_photos SET used = 1 WHERE id = ?", (p_id,))
+            else:
+                # 若性別庫空了，試著取任意一張未使用的
+                async with db.execute("SELECT id, image_url FROM crowd_photos WHERE guild_id = ? AND used = 0 ORDER BY RANDOM() LIMIT 1", (g_id,)) as cur:
+                    fallback_p = await cur.fetchone()
+                    if fallback_p:
+                        await db.execute("UPDATE crowd_photos SET used = 1 WHERE id = ?", (fallback_p[0],))
+                        img_url = fallback_p[1]
+
+            # 4. 年齡、身高、身分、特質
+            age = random.randint(16, 50)
+            height = random.randint(172, 192) if gen == "男" else random.randint(158, 176)
+            job = random.choice(CROWD_JOBS)
+            tags = "、".join(random.sample(CROWD_TAGS_POOL, k=random.randint(2, 3)))
+            relationship = random.choice(CROWD_RELATIONS)
+
+            # 5. 初始金錢與核心數值（單項初始最高 2500）
+            init_cash = random.randint(5000, 40000)
+            init_bank = random.randint(20000, 200000)
+            stat_names = ["流量熱度", "商業價值", "路人緣", "公關", "影響指數", "容貌", "才智", "個人才藝", "演繹", "唱跳"]
+            stats = {k: random.randint(300, 2500) for k in stat_names}
+
+            # 寫入角色資料表（is_npc = 3 標記為大眾動態路人）
+            await db.execute("""
+                INSERT INTO characters (
+                    guild_id, user_id, name, age, gender, job, faction, tags,
+                    relationship_status, created_at, is_npc, image_url, cash, bank, stats, rank, nationality, height
+                ) VALUES (?, 0, ?, ?, ?, ?, '無', ?, ?, ?, 3, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                g_id, full_name, age, gen, job, tags,
+                relationship, time.time(), img_url, init_cash, init_bank, json.dumps(stats, ensure_ascii=False), default_rank, nation, height
+            ))
+            created_list.append((full_name, gen, age, height, nation, job, default_rank, img_url))
+
+        # 檢查照片庫存剩餘數
+        async with db.execute("SELECT COUNT(*) FROM crowd_photos WHERE guild_id = ? AND used = 0", (g_id,)) as cur:
+            rem_photos = (await cur.fetchone())[0]
+            if rem_photos <= 5:
+                low_photo_warn = True
+
+        await db.commit()
+
+    # 輸出生成卡片
+    if len(created_list) == 1:
+        c = created_list[0]
+        embed = discord.Embed(title=f"🌟 大眾路人登場！【{c[0]}】", color=0x1ABC9C)
+        embed.description = f"演藝圈新人已正式錄入名冊，即刻參與全城生態！"
+        embed.add_field(name="基本履歷", value=f"• 國籍：`{c[4]}` ｜ 性別：`{c[1]}`\n• 年齡：`{c[2]} 歲` ｜ 身高：`{c[3]} cm`\n• 職業：`{c[5]}` ｜ 地位：**【{c[6]}】**", inline=False)
+        if c[7]:
+            embed.set_thumbnail(url=c[7])
+    else:
+        embed = discord.Embed(title=f"👥 大量發生完畢！成功生成 {len(created_list)} 位路人角色", color=0x1ABC9C)
+        for c in created_list:
+            embed.add_field(name=f"🎭 {c[0]} ({c[1]} / {c[4]})", value=f"{c[2]}歲・{c[3]}cm ｜ {c[5]} ｜ 【{c[6]}】", inline=False)
+
+    warn_msg = f"\n\n🚨 **【系統警告：相冊庫存即將見底！】**\n目前未使用的照片僅剩 **{rem_photos}** 張，請管理員盡快使用 `/路人資源補給` 補充！" if low_photo_warn else ""
+    await interaction.followup.send(content=warn_msg if low_photo_warn else None, embed=embed)
+
+# -------------------- 指令：/路人生態設定 --------------------
+@bot.tree.command(name="路人生態設定", description="【管理員專用】調整大眾路人每 48 小時的數值與金錢浮動規則")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(計算模式=[
+    app_commands.Choice(name="百分比浮動 (例如 ±5%)", value="percent"),
+    app_commands.Choice(name="固定點數浮動 (例如 ±50點)", value="fixed")
+])
+@app_commands.choices(金錢是否浮動=[
+    app_commands.Choice(name="是（資產與數值連帶波動）", value="1"),
+    app_commands.Choice(name="否（僅屬性能力浮動）", value="0")
+])
+@app_commands.describe(
+    計算模式="選擇增減是按比例還是固定點數",
+    增減量="填純數字。若選百分比，填 5 代表 ±5%；若選固定點數，填 50 代表 ±50 點",
+    單項最高上限="數值浮動的最高天花板（預設 3000）"
+)
+async def setting_crowd_npc(
+    interaction: discord.Interaction,
+    計算模式: app_commands.Choice[str],
+    增減量: float,
+    金錢是否浮動: app_commands.Choice[str],
+    單項最高上限: int = 3000
+):
+    g_id = interaction.guild_id
+    rate_val = (增減量 / 100.0) if 計算模式.value == "percent" else 增減量
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'npc_fluct_mode', ?) ON CONFLICT(guild_id, key) DO UPDATE SET value = ?", (g_id, 計算模式.value, 計算模式.value))
+        await db.execute("INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'npc_fluct_rate', ?) ON CONFLICT(guild_id, key) DO UPDATE SET value = ?", (g_id, str(rate_val), str(rate_val)))
+        await db.execute("INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'npc_fluct_money', ?) ON CONFLICT(guild_id, key) DO UPDATE SET value = ?", (g_id, 金錢是否浮動.value, 金錢是否浮動.value))
+        await db.execute("INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'npc_fluct_cap', ?) ON CONFLICT(guild_id, key) DO UPDATE SET value = ?", (g_id, str(單項最高上限), str(單項最高上限)))
+        await db.commit()
+
+    unit_desc = f"±{增減量}%" if 計算模式.value == "percent" else f"±{int(增減量)} 點"
+    embed = discord.Embed(title="⚙️ 大眾路人生態行情已更新", color=0x2ECC71)
+    embed.add_field(name="48小時波動機制", value=f"【{計算模式.name}】（幅度：`{unit_desc}`）", inline=False)
+    embed.add_field(name="金錢資產連動", value="已開啟" if 金錢是否浮動.value == "1" else "已關閉", inline=True)
+    embed.add_field(name="屬性天花板", value=f"最高 {單項最高上限} 點", inline=True)
+    await interaction.response.send_message(embed=embed)
 
 # -------------------- 清理與同步指令 --------------------
 @bot.command()
