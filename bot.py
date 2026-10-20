@@ -661,7 +661,46 @@ async def pet_health_decay_task():
         await db.commit()
 
 
-# -------------------- 定時背景任務（角色動態長大） --------------------
+# -------------------- 定時背景任務 --------------------
+@tasks.loop(hours=24)
+async def daily_interest():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters") as cur:
+            guild_rows = await cur.fetchall()
+
+        for (g_id,) in guild_rows:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'interest_rate'", (g_id,)) as cur:
+                row = await cur.fetchone()
+                rate = float(row[0]) if row else 0.05
+
+            await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
+        await db.commit()
+
+@tasks.loop(hours=1)
+async def check_ticket_expiration():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
+            expired = await cur.fetchall()
+
+        for record in expired:
+            rec_id, c_name, u_id, g_id, r_id, t_name = record
+            guild = bot.get_guild(g_id)
+            if guild:
+                member = guild.get_member(u_id)
+                role = guild.get_role(r_id)
+                if member and role:
+                    try:
+                        await member.remove_roles(role, reason="大地圖門票逾期未歸，系統強制遣返")
+                    except Exception:
+                        pass
+
+            ban_until = now + (300 * 3600)
+            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE guild_id = ? AND name = ?", (ban_until, g_id, c_name))
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
+
+        await db.commit()
+
 @tasks.loop(hours=24)
 async def monthly_age_up():
     now = time.time()
@@ -670,7 +709,6 @@ async def monthly_age_up():
             guilds = await g_cur.fetchall()
 
         for (g_id,) in guilds:
-            # 讀取該伺服器的時間倍率（預設 30 天 = 1 年）
             async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'days_per_game_year'", (g_id,)) as s_cur:
                 s_row = await s_cur.fetchone()
                 days_per_year = int(s_row[0]) if s_row else 30
@@ -685,7 +723,7 @@ async def monthly_age_up():
                         await db.execute("""
                             UPDATE characters 
                             SET age = age + ?, created_at = created_at + ? 
-                            WHERE guild_id = ? AND name = ?", 
+                            WHERE guild_id = ? AND name = ?
                         """, (years_passed, years_passed * cycle_seconds, g_id, name))
 
         await db.commit()
