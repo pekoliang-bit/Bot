@@ -48,7 +48,7 @@ DB_PATH = "game_database.db"
 # -------------------- 資料庫完整初始化 --------------------
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # 1. 角色表
+        # 1. 角色表（加入 image_url 支援大頭照）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS characters (
                 guild_id INTEGER,
@@ -70,9 +70,16 @@ async def init_db():
                 rank TEXT DEFAULT '未定級',
                 is_npc INTEGER DEFAULT 0,
                 company_id INTEGER DEFAULT 0,
+                image_url TEXT DEFAULT '',
                 PRIMARY KEY (guild_id, name)
             )
         """)
+        # 自動為舊資料庫補上欄位防報錯
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN image_url TEXT DEFAULT ''")
+        except Exception:
+            pass
+
         # 2. 背包
         await db.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
@@ -601,7 +608,8 @@ async def play_lottery(interaction: discord.Interaction):
     性別="性別",
     職業身分="職業或目前身分",
     標籤="個人特質標籤 (例如: 實力派, 厭世臉)",
-    感情狀況="選填 (例如: 單身, 隱婚, 熱戀中)"
+    感情狀況="選填 (例如: 單身, 隱婚, 熱戀中)",
+    照片連結="選填：貼上角色立繪或大頭照的圖片網址 (JPG/PNG/GIF)"
 )
 async def create_profile(
     interaction: discord.Interaction,
@@ -611,7 +619,8 @@ async def create_profile(
     性別: str,
     職業身分: str,
     標籤: str,
-    感情狀況: str = "單身"
+    感情狀況: str = "單身",
+    照片連結: str = ""
 ):
     g_id = interaction.guild_id
     target_name = 名字.strip()
@@ -624,13 +633,20 @@ async def create_profile(
                 return
 
         await db.execute("""
-            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc)
-            VALUES (?, ?, ?, ?, ?, ?, '無', ?, ?, ?, ?)
-        """, (g_id, interaction.user.id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time(), is_npc_val))
+            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, '無', ?, ?, ?, ?, ?)
+        """, (g_id, interaction.user.id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time(), is_npc_val, 照片連結.strip()))
         await db.commit()
 
     label = "玩家角色" if is_npc_val == 0 else "玩家自製 NPC"
-    await interaction.response.send_message(f"🎉 【{label}】**{target_name}** 建立成功！\n• 標籤：`{標籤}` ｜ 感情狀態：`{感情狀況}`")
+    embed = discord.Embed(title=f"🎉【{label}】建檔成功", color=0x2ECC71)
+    embed.add_field(name="姓名", value=f"**{target_name}** ({年齡}歲 / {性別})", inline=True)
+    embed.add_field(name="身分", value=f"{職業身分}", inline=True)
+    embed.add_field(name="標籤與感情", value=f"`{標籤}` ｜ {感情狀況}", inline=False)
+    if 照片連結.strip().startswith("http"):
+        embed.set_thumbnail(url=照片連結.strip())
+
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="官方npc登記", description="【管理員專用】登記官方全域 NPC 檔案")
 @app_commands.default_permissions(administrator=True)
@@ -640,7 +656,8 @@ async def create_profile(
     性別="性別",
     職業身分="官方身分或職業",
     標籤="NPC 專屬標籤",
-    感情狀況="選填 (預設未知)"
+    感情狀況="選填 (預設未知)",
+    照片連結="選填：貼上官方 NPC 的形象立繪或頭像連結"
 )
 async def register_official_npc(
     interaction: discord.Interaction,
@@ -649,20 +666,30 @@ async def register_official_npc(
     性別: str,
     職業身分: str,
     標籤: str,
-    感情狀況: str = "未知"
+    感情狀況: str = "未知",
+    照片連結: str = ""
 ):
     g_id = interaction.guild_id
     target_name = 名字.strip()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc)
-            VALUES (?, 0, ?, ?, ?, ?, '官方勢力', ?, ?, ?, 1)
+            INSERT INTO characters (guild_id, user_id, name, age, gender, job, faction, tags, relationship_status, created_at, is_npc, image_url)
+            VALUES (?, 0, ?, ?, ?, ?, '官方勢力', ?, ?, ?, 1, ?)
             ON CONFLICT(guild_id, name) DO UPDATE SET
-                age = excluded.age, gender = excluded.gender, job = excluded.job, tags = excluded.tags, relationship_status = excluded.relationship_status
-        """, (g_id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time()))
+                age = excluded.age, gender = excluded.gender, job = excluded.job,
+                tags = excluded.tags, relationship_status = excluded.relationship_status,
+                image_url = excluded.image_url
+        """, (g_id, target_name, 年齡, 性別, 職業身分, 標籤, 感情狀況, time.time(), 照片連結.strip()))
         await db.commit()
 
-    await interaction.response.send_message(f"👑 官方 NPC **{target_name}** 登記完畢！")
+    embed = discord.Embed(title=f"👑 官方 NPC 登記完畢：【{target_name}】", color=0x9B59B6)
+    embed.add_field(name="資料", value=f"{年齡}歲 ｜ {性別} ｜ {職業身分}", inline=False)
+    embed.add_field(name="標籤", value=f"`{標籤}`", inline=True)
+    if 照片連結.strip().startswith("http"):
+        embed.set_thumbnail(url=照片連結.strip())
+
+    await interaction.response.send_message(embed=embed)
+
 # -------------------- 指令：/檔案更新（完整階層流程） --------------------
 class ProfileUpdateStepView(discord.ui.View):
     def __init__(self, char_name: str, guild_id: int, is_admin: bool):
@@ -953,7 +980,7 @@ async def audit_pass_cmd(interaction: discord.Interaction, 文章連結: str, �
                 f"恭喜通過初步審核！請依照下列步驟盡速完成建檔：\n\n"
                 f"1️⃣ **建立檔案**：使用 `/檔案建立` 建立個人身分與標籤。\n"
                 f"2️⃣ **登記數值 & 作品**：使用 `/數值登記` 貼上人設單自動解析數值，並用 `/檔案更新` 補充歷練。\n"
-                f"3️⃣ **查看任務列表**：使用 `/任務` 查看全城看板，接取委託開啟生涯！\n\n"
+                f"3️⃣ **查看任務列表**：使用 `/任務` 查看全城看板，完成新手任務！\n\n"
                 f"*管理員提示：二次使用本指令即可自動套算數值並發放初始金幣。*"
             )
             await interaction.response.send_message(embed=embed)
@@ -1099,7 +1126,7 @@ async def asset_system(interaction: discord.Interaction, 角色名: str):
             row = await cur.fetchone()
             hide_comp = row and row[0] == "1"
 
-    embed = discord.Embed(title=f"🏙️ 流光城資產與產權管理中心 — 操作人：【{c_name}】", description="請點選下方按鈕選購車輛、物業或進行公司設立：", color=0x34495E)
+    embed = discord.Embed(title=f"🏙️ 資產與產權管理中心 — 操作人：【{c_name}】", description="請點選下方按鈕選購車輛、物業或進行公司設立：", color=0x34495E)
     view = discord.ui.View()
 
     btn_vehicle = discord.ui.Button(label="🚗 購置車輛", style=discord.ButtonStyle.primary)
@@ -1170,8 +1197,8 @@ async def asset_system(interaction: discord.Interaction, 角色名: str):
         async def create_comp_cb(inter: discord.Interaction):
             class CreateCompanyModal(discord.ui.Modal, title="創立全新公司/工作室"):
                 comp_name = discord.ui.TextInput(label="公司名稱")
-                purpose = discord.ui.TextInput(label="用途宗旨", placeholder="例如: 影視製作、藝人經紀")
-                comp_type = discord.ui.TextInput(label="類型 (個人工作室/影業/經紀公司等)")
+                purpose = discord.ui.TextInput(label="用途宗旨", placeholder="例如: 貿易、藝人經紀")
+                comp_type = discord.ui.TextInput(label="類型 (個人工作室/影業/公司等)")
                 structure = discord.ui.TextInput(label="有限公司/股份有限公司 (填: 1人 或 2人以上)")
                 capital_and_partners = discord.ui.TextInput(
                     label="出資額與合夥人",
@@ -1773,15 +1800,17 @@ class ProfileMainView(discord.ui.View):
 async def view_char_cmd(interaction: discord.Interaction, 名字: str):
     g_id = interaction.guild_id
     target_name = 名字.strip()
+    await interaction.response.defer(ephemeral=False)
+
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT age, gender, job, faction, tags, relationship_status, cp_info, cash, bank, stats, rank, company_id, is_npc FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
+        async with db.execute("SELECT age, gender, job, faction, tags, relationship_status, cp_info, cash, bank, stats, rank, company_id, is_npc, image_url FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
             row = await cur.fetchone()
 
         if not row:
-            await interaction.response.send_message(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+            await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
             return
 
-        age, gender, job, faction, tags, rel_status, cp_json, cash, bank, stats_json, rank_name, comp_id, is_npc_val = row
+        age, gender, job, faction, tags, rel_status, cp_json, cash, bank, stats_json, rank_name, comp_id, is_npc_val, img_url = row
         async with db.execute("SELECT asset_type, asset_name, price FROM personal_assets WHERE guild_id = ? AND owner_name = ?", (g_id, target_name)) as a_cur:
             assets = await a_cur.fetchall()
         async with db.execute("SELECT name, type_name FROM companies WHERE guild_id = ? AND creator_name = ?", (g_id, target_name)) as c_cur:
@@ -1790,7 +1819,8 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
     cp_obj = json.loads(cp_json) if cp_json else {}
     cp_text = f"💕 CP: **{cp_obj.get('target')}** ({cp_obj.get('relation')})" if cp_obj.get("target") else "無"
 
-    embed = discord.Embed(title=f"🪪【{target_name}】個人資料面板", color=0xE67E22)
+    tag_prefix = "［官方 NPC］" if is_npc_val == 1 else ("［自設 NPC］" if is_npc_val == 2 else "")
+    embed = discord.Embed(title=f"🪪 {tag_prefix}【{target_name}】個人資料面板", color=0xE67E22)
     embed.add_field(name="基本身分", value=f"• 年齡/性別: {age}歲 / {gender}\n• 身分/職業: {job}\n• 勢力: {faction}\n• 特質標籤: `{tags or '無'}`", inline=True)
     embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
     embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 現金: ${cash:,} ｜ 銀行: ${bank:,}", inline=False)
@@ -1804,53 +1834,23 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
     stat_texts = [f"{k}: **{v}**" for k, v in stats.items()]
     embed.add_field(name="📊 核心數值", value=" ｜ ".join(stat_texts[:10]) if stat_texts else "尚未登記任何數值", inline=False)
 
+    if img_url and img_url.startswith("http"):
+        embed.set_thumbnail(url=img_url)
+
     view = ProfileMainView(target_name, g_id)
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.followup.send(embed=embed, view=view)
 
 # -------------------- 指令：/npc查看 --------------------
 @bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 名冊大廳或個別檔案")
 @app_commands.describe(npc名稱="可選填：輸入特定 NPC 姓名，留空則開啟名錄大廳")
 async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
     g_id = interaction.guild_id
-    await interaction.response.defer(ephemeral=True)
 
     if npc名稱:
-        target_name = npc名稱.strip()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT age, gender, job, faction, tags, relationship_status, cp_info, cash, bank, stats, rank, company_id, is_npc FROM characters WHERE guild_id = ? AND name = ?", (g_id, target_name)) as cur:
-                row = await cur.fetchone()
-
-            if not row:
-                await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
-                return
-
-            age, gender, job, faction, tags, rel_status, cp_json, cash, bank, stats_json, rank_name, comp_id, is_npc_val = row
-            async with db.execute("SELECT asset_type, asset_name, price FROM personal_assets WHERE guild_id = ? AND owner_name = ?", (g_id, target_name)) as a_cur:
-                assets = await a_cur.fetchall()
-            async with db.execute("SELECT name, type_name FROM companies WHERE guild_id = ? AND creator_name = ?", (g_id, target_name)) as c_cur:
-                comps = await c_cur.fetchall()
-
-        cp_obj = json.loads(cp_json) if cp_json else {}
-        cp_text = f"💕 CP: **{cp_obj.get('target')}** ({cp_obj.get('relation')})" if cp_obj.get("target") else "無"
-
-        embed = discord.Embed(title=f"🪪【{target_name}】官方 NPC 資料面板", color=0x9B59B6)
-        embed.add_field(name="基本身分", value=f"• 年齡/性別: {age}歲 / {gender}\n• 身分/職業: {job}\n• 勢力: {faction}\n• 特質標籤: `{tags or '無'}`", inline=True)
-        embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
-        embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 現金: ${cash:,} ｜ 銀行: ${bank:,}", inline=False)
-
-        asset_lines = [f"• [{a[0]}] {a[1]} (${a[2]:,})" for a in assets]
-        if comps:
-            for c in comps: asset_lines.append(f"• [名下公司] {c[0]} ({c[1]})")
-        embed.add_field(name="🚗 房產、車輛與公司資產", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
-
-        stats = json.loads(stats_json) if stats_json else {}
-        stat_texts = [f"{k}: **{v}**" for k, v in stats.items()]
-        embed.add_field(name="📊 核心數值", value=" ｜ ".join(stat_texts[:10]) if stat_texts else "尚未登記任何數值", inline=False)
-
-        view = ProfileMainView(target_name, g_id)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        await view_char_cmd(interaction, npc名稱)
         return
 
+    await interaction.response.defer(ephemeral=True)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT name, age, gender, job FROM characters WHERE guild_id = ? AND is_npc = 1", (g_id,)) as cur:
             all_npcs = await cur.fetchall()
@@ -1935,7 +1935,7 @@ async def register_stats_multi(
                     pass
 
             for k, v in re.findall(r"([^\d\s:：,，]+)\s*[:：]?\s*(\d+)", post_content):
-                if k not in ["流光幣", "現金", "金錢", "年齡", "順序"]:
+                if k not in ["現金", "金錢", "年齡", "順序"]:
                     char_stats[k] = int(v)
 
             await db.execute("UPDATE characters SET stats = ? WHERE guild_id = ? AND name = ?", (json.dumps(char_stats, ensure_ascii=False), g_id, target_name))
