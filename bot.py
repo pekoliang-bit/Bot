@@ -525,15 +525,19 @@ async def init_db():
                 target_role_id INTEGER DEFAULT 0,
                 seller TEXT DEFAULT '官方',
                 asset_type TEXT DEFAULT '一般',
-             faction_name TEXT DEFAULT ''
+            faction_name TEXT DEFAULT ''
         )
     """)
+
+    try:
+        await db.execute("ALTER TABLE characters ADD COLUMN action_points INTEGER DEFAULT 0")
+    except Exception:
+        pass
 
     try:
         await db.execute("ALTER TABLE shop_items ADD COLUMN stock INTEGER DEFAULT -1")
     except Exception:
         pass
-
 
 
         # 4. 可購置車輛與房產名冊表
