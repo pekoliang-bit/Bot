@@ -2183,7 +2183,7 @@ async def view_npc_cmd(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, view=NPCLobbySelectView(interaction.guild_id), ephemeral=True)
 
-# -------------------- ProfileUpdateStepView --------------------
+# -------------------- ProfileUpdateStepView（選單式個資更新） --------------------
 class ProfileUpdateStepView(discord.ui.View):
     def __init__(self, char_name: str, guild_id: int, is_admin: bool):
         super().__init__(timeout=180)
@@ -2191,210 +2191,104 @@ class ProfileUpdateStepView(discord.ui.View):
         self.guild_id = guild_id
         self.is_admin = is_admin
 
-    @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary, row=0)
     async def update_base(self, interaction: discord.Interaction, button: discord.ui.Button):
-        class BaseModal(discord.ui.Modal, title=f"更新【{self.char_name}】個人資料"):
-            field_choice = discord.ui.TextInput(
-                label="欲修改欄位 (出道年資/代表色/職業/感情/CP)", 
-                placeholder="例如: 出道年資、代表色、感情狀況、職業 或 CP"
-            )
-            new_val = discord.ui.TextInput(
-                label="修改後內容", 
-                placeholder="出道年資請填數字 (0 代表未出道)；色碼填 #FF69B4；CP填: 名字/關係"
-            )
+        # 建立欄位選擇選單，不用再手動打字
+        class FieldSelect(discord.ui.Select):
+            def __init__(self, c_name: str, g_id: int):
+                self.c_name = c_name
+                self.g_id = g_id
+                opts = [
+                    discord.SelectOption(label="出道年資", value="debut_years", description="修改出道年數 (0 代表未出道新人)", emoji="🌟"),
+                    discord.SelectOption(label="代表色", value="theme_color", description="設定代表色色碼 (如 #FF69B4)", emoji="🎨"),
+                    discord.SelectOption(label="職業/身分", value="job", description="修改藝人職業身分", emoji="💼"),
+                    discord.SelectOption(label="感情狀況", value="relationship_status", description="修改感情狀態 (單身、隱婚傳聞等)", emoji="💌"),
+                    discord.SelectOption(label="CP/伴侶", value="cp_info", description="格式: 名字/關係 (例如: 某某/戀人)", emoji="💕"),
+                    discord.SelectOption(label="特質標籤", value="tags", description="修改外號與特質 (以頓號或空格隔開)", emoji="🏷️")
+                ]
+                super().__init__(placeholder="請選擇欲修改的資料欄位...", options=opts)
 
-            async def on_submit(m_self, inter: discord.Interaction):
-                f_name = m_self.field_choice.value.strip()
-                val = m_self.new_val.value.strip()
+            async def callback(self, s_inter: discord.Interaction):
+                chosen_field = self.values[0]
 
-                async with aiosqlite.connect(DB_PATH) as db:
-                    # 1. 出道年資判斷（支援各種寫法，全分類角色適用）
-                    if any(k in f_name for k in ["年資", "出道", "年數", "debut", "資歷"]):
-                        try:
-                            # 提取純數字
-                            match_num = re.search(r"\d+", val)
-                            if not match_num:
-                                raise ValueError
-                            years_val = int(match_num.group())
-                        except ValueError:
-                            await inter.response.send_message("❌ 出道年資請填寫純數字年份！（例如填 `5` 代表出道 5 年，填 `0` 代表未出道）", ephemeral=True)
-                            return
+                # 依選擇的項目彈出對應輸入框
+                class ValueModal(discord.ui.Modal):
+                    def __init__(self, target_field: str, field_label: str):
+                        super().__init__(title=f"修改【{c_name}】{field_label}")
+                        self.target_field = target_field
+                        
+                        hint_map = {
+                            "debut_years": "請填寫年數（例如 5 代表出道 5 年，0 代表未出道）",
+                            "theme_color": "請填寫16進位色碼（例如 #FF69B4）",
+                            "job": "請填寫新的職業或演藝身分",
+                            "relationship_status": "例如: 單身、熱戀中、隱婚傳聞中",
+                            "cp_info": "格式: 角色名/關係（例如: 顧清/伴侶）",
+                            "tags": "例如: 神顏、實力派（最多兩個）"
+                        }
 
-                        # 抓取角色當前年齡，自動回推進出道入行年齡
-                        async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as c_cur:
-                            c_row = await c_cur.fetchone()
-                            cur_age = c_row[0] if (c_row and c_row[0]) else 20
+                        self.val_input = discord.ui.TextInput(
+                            label=f"請輸入新的【{field_label}】內容",
+                            placeholder=hint_map.get(target_field, "請輸入新內容"),
+                            min_length=1,
+                            max_length=50
+                        )
+                        self.add_item(self.val_input)
 
-                        calc_debut_age = max(1, cur_age - years_val) if years_val > 0 else cur_age
+                    async def on_submit(self, m_inter: discord.Interaction):
+                        new_text = self.val_input.value.strip()
 
-                        await db.execute("""
-                            UPDATE characters 
-                            SET debut_years = ?, debut_age = ?
-                            WHERE guild_id = ? AND name = ?
-                        """, (years_val, calc_debut_age, self.guild_id, self.char_name))
-                        await db.commit()
+                        async with aiosqlite.connect(DB_PATH) as db:
+                            if self.target_field == "debut_years":
+                                match_num = re.search(r"\d+", new_text)
+                                if not match_num:
+                                    await m_inter.response.send_message("❌ 出道年資請填入純數字！（例如 0、5、10）", ephemeral=True)
+                                    return
+                                y_val = int(match_num.group())
 
-                        title_desc = get_debut_title(years_val, calc_debut_age)
-                        await inter.response.send_message(f"✅ 【{self.char_name}】的出道年資已成功更新為 **{years_val} 年**！\n🌟 當前星途稱號：**{title_desc}**", ephemeral=True)
-                        return
+                                async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as cur:
+                                    c_row = await cur.fetchone()
+                                    cur_age = c_row[0] if (c_row and c_row[0]) else 20
 
-                    # 2. 代表色判斷
-                    elif any(k in f_name for k in ["代表色", "顏色", "色碼", "color"]):
-                        await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    
-                    # 3. 職業/身分
-                    elif any(k in f_name for k in ["職業", "身分", "job"]):
-                        await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    
-                    # 4. 感情狀態
-                    elif any(k in f_name for k in ["感情", "情史"]):
-                        await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    
-                    # 5. 特質標籤
-                    elif any(k in f_name for k in ["標籤", "特質", "tags"]):
-                        await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    
-                    # 6. CP 伴侶
-                    elif f_name.upper() == "CP" or "伴侶" in f_name:
-                        cp_parts = re.split(r"[/,，\s]+", val)
-                        cp_obj = {"target": cp_parts[0], "relation": cp_parts[1] if len(cp_parts) > 1 else "伴侶"}
-                        await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.guild_id, self.char_name))
-                    
-                    else:
-                        await inter.response.send_message("❌ 無法識別該欄位名稱！請填寫：`出道年資`、`代表色`、`職業`、`感情狀況` 或 `CP`。", ephemeral=True)
-                        return
+                                d_age = max(1, cur_age - y_val) if y_val > 0 else cur_age
+                                await db.execute("UPDATE characters SET debut_years = ?, debut_age = ? WHERE guild_id = ? AND name = ?", (y_val, d_age, g_id, c_name))
+                                await db.commit()
+                                
+                                title_text = get_debut_title(y_val, d_age)
+                                await m_inter.response.send_message(f"✅ 【{c_name}】的出道年資已更新為 **{y_val} 年**！\n🌟 當前星途稱謂：**{title_text}**", ephemeral=True)
+                                return
 
-                    await db.commit()
+                            elif self.target_field == "theme_color":
+                                await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                            elif self.target_field == "job":
+                                await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                            elif self.target_field == "relationship_status":
+                                await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                            elif self.target_field == "tags":
+                                await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                            elif self.target_field == "cp_info":
+                                parts = re.split(r"[/,，\s]+", new_text)
+                                cp_obj = {"target": parts[0], "relation": parts[1] if len(parts) > 1 else "伴侶"}
+                                await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), g_id, c_name))
 
-                await inter.response.send_message(f"✅ 【{self.char_name}】的 **{f_name}** 已更新為：`{val}`！", ephemeral=True)
+                            await db.commit()
 
-        await interaction.response.send_modal(BaseModal())
+                        await m_inter.response.send_message(f"✅ 成功將【{c_name}】的 **{s_inter.data['values'][0]}** 更新為：`{new_text}`！", ephemeral=True)
 
-
-
-    @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success)
-    async def update_achievement(self, interaction: discord.Interaction, button: discord.ui.Button):
-        class AchieveModal(discord.ui.Modal, title=f"登記【{self.char_name}】成就歷練"):
-            category = discord.ui.TextInput(label="分類 (電影/電視劇/綜藝/大型事件等)", placeholder="例如: 電影")
-            title = discord.ui.TextInput(label="作品/成就名稱", placeholder="例如: 楚門的世界")
-            role_type = discord.ui.TextInput(label="擔任/番位", placeholder="例如: 女主、男配、主策劃")
-
-            async def on_submit(m_self, inter: discord.Interaction):
-                entry = {
-                    "category": "成就",
-                    "type": m_self.category.value.strip(),
-                    "title": m_self.title.value.strip(),
-                    "extra": m_self.role_type.value.strip()
+                label_lookup = {
+                    "debut_years": "出道年資",
+                    "theme_color": "代表色",
+                    "job": "職業身分",
+                    "relationship_status": "感情狀況",
+                    "cp_info": "CP伴侶",
+                    "tags": "特質標籤"
                 }
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
-                        works = json.loads((await cur.fetchone())[0] or "[]")
-                    works.append(entry)
-                    await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
-                    await db.commit()
+                await s_inter.response.send_modal(ValueModal(chosen_field, label_lookup.get(chosen_field, "資料")))
 
-                await check_and_update_rank(self.guild_id, self.char_name, inter.channel)
-                await inter.response.send_message(f"✅ 成功為 **{self.char_name}** 登記成就：【{entry['type']}】《{entry['title']}》（{entry['extra']}）！", ephemeral=True)
+        select_view = discord.ui.View()
+        select_view.add_item(FieldSelect(self.char_name, self.guild_id))
+        await interaction.response.send_message(f"請自下方選單挑選欲為【{self.char_name}】修改的欄位：", view=select_view, ephemeral=True)
 
-        await interaction.response.send_modal(AchieveModal())
-
-    @discord.ui.button(label="🎖️ 榮譽更新", style=discord.ButtonStyle.secondary)
-    async def update_honor(self, interaction: discord.Interaction, button: discord.ui.Button):
-        class HonorModal(discord.ui.Modal, title=f"登記【{self.char_name}】榮譽頭銜"):
-            name = discord.ui.TextInput(label="榮譽名稱 / 代言商品", placeholder="例如: 香奈兒全球代言")
-            level = discord.ui.TextInput(label="級別 (如: 奢華, S+, 頂級)", placeholder="例如: 奢華")
-            title_name = discord.ui.TextInput(label="授予頭銜", placeholder="例如: 品牌摯友 / 終身榮譽會員")
-
-            async def on_submit(m_self, inter: discord.Interaction):
-                entry = {
-                    "category": "榮譽",
-                    "title": m_self.name.value.strip(),
-                    "extra": f"{m_self.level.value.strip()} ｜ {m_self.title_name.value.strip()}"
-                }
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute("SELECT works FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
-                        works = json.loads((await cur.fetchone())[0] or "[]")
-                    works.append(entry)
-                    await db.execute("UPDATE characters SET works = ? WHERE guild_id = ? AND name = ?", (json.dumps(works, ensure_ascii=False), self.guild_id, self.char_name))
-                    await db.commit()
-
-                await check_and_update_rank(self.guild_id, self.char_name, inter.channel)
-                await inter.response.send_message(f"✅ 成功為 **{self.char_name}** 登記榮譽：【{entry['title']}】（{entry['extra']}）！", ephemeral=True)
-
-        await interaction.response.send_modal(HonorModal())
-
-    @discord.ui.button(label="💬 交際關係傾向", style=discord.ButtonStyle.danger)
-    async def update_relationship(self, interaction: discord.Interaction, button: discord.ui.Button):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'tendency_list'", (self.guild_id,)) as cur:
-                row = await cur.fetchone()
-                tendencies = json.loads(row[0]) if row and row[0] else ["傾心", "好奇", "觀察", "痴迷", "友好", "敵對", "利用"]
-
-        class RelationModal(discord.ui.Modal, title=f"變更【{self.char_name}】對其他人的交際傾向"):
-            target = discord.ui.TextInput(label="目標角色/NPC 名稱", placeholder="輸入對方全名")
-            tendency = discord.ui.TextInput(label=f"交際傾向 ({'/'.join(tendencies[:6])})", placeholder="輸入傾向詞彙")
-            status = discord.ui.TextInput(label="狀況敘述 (可選)", placeholder="例如: 暗中保護、針鋒相對", required=False)
-
-            async def on_submit(m_self, inter: discord.Interaction):
-                t_name = m_self.target.value.strip()
-                t_val = m_self.tendency.value.strip()
-                s_val = m_self.status.value.strip() or "普通往來"
-
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute("""
-                        INSERT INTO relationships (guild_id, from_char, to_char, tendency, status_desc)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(guild_id, from_char, to_char) DO UPDATE SET tendency = ?, status_desc = ?
-                    """, (self.guild_id, self.char_name, t_name, t_val, s_val, t_val, s_val))
-                    await db.commit()
-                await inter.response.send_message(f"💞 已更新 **{self.char_name}** ➔ **{t_name}** 的交際傾向為【{t_val}】（狀態：{s_val}）！", ephemeral=True)
-
-        await interaction.response.send_modal(RelationModal())
-# -------------------- ProfileUpdateStepView（含代表色個資更新） --------------------
-class ProfileUpdateStepView(discord.ui.View):
-    def __init__(self, char_name: str, guild_id: int, is_admin: bool):
-        super().__init__(timeout=180)
-        self.char_name = char_name
-        self.guild_id = guild_id
-        self.is_admin = is_admin
-
-    @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary)
-    async def update_base(self, interaction: discord.Interaction, button: discord.ui.Button):
-        class BaseModal(discord.ui.Modal, title=f"更新【{self.char_name}】個人資料"):
-            field_choice = discord.ui.TextInput(
-                label="欲修改欄位 (職業/感情狀況/CP/代表色)", 
-                placeholder="例如: 代表色、感情狀況 或 CP"
-            )
-            new_val = discord.ui.TextInput(
-                label="修改後內容", 
-                placeholder="填入新資料 (若為代表色請填色碼如 #FF69B4；若為CP請填: 名字/關係)"
-            )
-
-            async def on_submit(m_self, inter: discord.Interaction):
-                f_name = m_self.field_choice.value.strip()
-                val = m_self.new_val.value.strip()
-                async with aiosqlite.connect(DB_PATH) as db:
-                    if f_name in ["職業", "身分", "job"]:
-                        await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    elif f_name in ["標籤", "tags"]:
-                        await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    elif f_name in ["感情狀況", "感情"]:
-                        await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    elif f_name in ["代表色", "顏色", "色碼", "theme_color"]:
-                        await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                    elif f_name in ["CP", "cp"]:
-                        cp_parts = re.split(r"[/,，\s]+", val)
-                        cp_obj = {"target": cp_parts[0], "relation": cp_parts[1] if len(cp_parts) > 1 else "伴侶"}
-                        await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.guild_id, self.char_name))
-                    else:
-                        await inter.response.send_message("❌ 無法識別該欄位名稱！請填寫：職業、感情狀況、代表色 或 CP。", ephemeral=True)
-                        return
-                    await db.commit()
-                await inter.response.send_message(f"✅ 【{self.char_name}】的 **{f_name}** 已更新為：`{val}`！", ephemeral=True)
-
-        await interaction.response.send_modal(BaseModal())
-
-    @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success, row=0)
     async def update_achievement(self, interaction: discord.Interaction, button: discord.ui.Button):
         class AchieveModal(discord.ui.Modal, title=f"登記【{self.char_name}】成就歷練"):
             category = discord.ui.TextInput(label="分類 (電影/電視劇/綜藝/大型事件等)", placeholder="例如: 電影")
@@ -2421,7 +2315,7 @@ class ProfileUpdateStepView(discord.ui.View):
 
         await interaction.response.send_modal(AchieveModal())
 
-    @discord.ui.button(label="🎖️ 榮譽更新", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="🎖️ 榮譽更新", style=discord.ButtonStyle.secondary, row=1)
     async def update_honor(self, interaction: discord.Interaction, button: discord.ui.Button):
         class HonorModal(discord.ui.Modal, title=f"登記【{self.char_name}】榮譽頭銜"):
             name = discord.ui.TextInput(label="榮譽名稱 / 代言商品", placeholder="例如: 香奈兒全球代言")
@@ -2447,7 +2341,7 @@ class ProfileUpdateStepView(discord.ui.View):
 
         await interaction.response.send_modal(HonorModal())
 
-    @discord.ui.button(label="💬 交際關係傾向", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="💬 交際關係傾向", style=discord.ButtonStyle.danger, row=1)
     async def update_relationship(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'tendency_list'", (self.guild_id,)) as cur:
