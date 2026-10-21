@@ -2284,7 +2284,8 @@ class ProfileUpdateStepView(discord.ui.View):
                     "cp_info": "CP伴侶",
                     "tags": "特質標籤"
                 }
-                await s_inter.response.send_modal(ValueModal(chosen_field, label_lookup.get(chosen_field, "資料")))
+                await s_inter.response.send_modal(ValueModal(self.c_name, chosen_field, label_lookup.get(chosen_field, "資料")))
+
 
         select_view = discord.ui.View()
         select_view.add_item(FieldSelect(self.char_name, self.guild_id))
