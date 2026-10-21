@@ -1523,7 +1523,7 @@ async def register_official_npc(
         embed=embed,
         view=flow_view
     )
-# -------------------- 指令：/審核通過（分類審核、秘密結算與專屬一審指引） --------------------
+# -------------------- 指令：/審核通過（加入防卡死與報錯追蹤） --------------------
 @bot.tree.command(name="審核通過", description="【管理員專用】人設單兩段式審核：一審指引打勾，二審自動按公式秘密核發初始金幣")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(類別=[
@@ -1548,233 +1548,225 @@ async def audit_pass_cmd(
     ch = interaction.channel
     await interaction.response.defer(ephemeral=False)
 
-    # 1. 抓取人設單文字
-    target_content, post_author_id = "", 0
-    if 人設單文章連結:
-        link_m = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 人設單文章連結.strip())
-        if link_m:
-            c_id = int(link_m.group(1))
-            m_id = int(link_m.group(2)) if link_m.group(2) else None
+    try:
+        # 1. 抓取人設單文字
+        target_content, post_author_id = "", 0
+        if 人設單文章連結:
+            link_m = re.search(r"channels/\d+/(\d+)(?:/(\d+))?", 人設單文章連結.strip())
+            if link_m:
+                c_id = int(link_m.group(1))
+                m_id = int(link_m.group(2)) if link_m.group(2) else None
+                try:
+                    fetch_ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
+                    if isinstance(fetch_ch, discord.Thread):
+                        first_msg = await fetch_ch.fetch_message(fetch_ch.id)
+                        target_content = first_msg.content
+                        post_author_id = first_msg.author.id
+                    elif m_id:
+                        m = await fetch_ch.fetch_message(m_id)
+                        target_content = m.content
+                        post_author_id = m.author.id
+                except Exception:
+                    pass
+        elif isinstance(ch, discord.Thread):
             try:
-                fetch_ch = interaction.client.get_channel(c_id) or await interaction.client.fetch_channel(c_id)
-                if isinstance(fetch_ch, discord.Thread):
-                    first_msg = await fetch_ch.fetch_message(fetch_ch.id)
-                    target_content = first_msg.content
-                    post_author_id = first_msg.author.id
-                elif m_id:
-                    m = await fetch_ch.fetch_message(m_id)
-                    target_content = m.content
-                    post_author_id = m.author.id
+                starter = await ch.parent.fetch_message(ch.id) if hasattr(ch, "parent") else None
+                if not starter:
+                    starter = await ch.fetch_message(ch.id)
+                target_content = starter.content
+                post_author_id = starter.author.id
             except Exception:
-                pass
-    elif isinstance(ch, discord.Thread):
-        try:
-            starter = await ch.parent.fetch_message(ch.id) if hasattr(ch, "parent") else None
-            if not starter:
-                starter = await ch.fetch_message(ch.id)
-            target_content = starter.content
-            post_author_id = starter.author.id
-        except Exception:
-            async for msg in ch.history(limit=5, oldest_first=True):
-                if not msg.author.bot:
-                    target_content = msg.content
-                    post_author_id = msg.author.id
-                    break
+                async for msg in ch.history(limit=5, oldest_first=True):
+                    if not msg.author.bot:
+                        target_content = msg.content
+                        post_author_id = msg.author.id
+                        break
 
-    parsed = parse_character_sheet(target_content) if target_content else {}
-    c_name = 角色名.strip() if 角色名 else parsed.get("name", "")
+        parsed = parse_character_sheet(target_content) if target_content else {}
+        c_name = 角色名.strip() if 角色名 else parsed.get("name", "")
 
-    if not c_name:
-        await interaction.followup.send("❌ 無法偵測到角色姓名！請確認人設格式，或手動填入【角色名】參數。", ephemeral=True)
-        return
+        if not c_name:
+            await interaction.followup.send("❌ 無法偵測到角色姓名！請確認人設格式，或手動填入【角色名】參數。", ephemeral=True)
+            return
 
-    thread_id = ch.id if isinstance(ch, discord.Thread) else 0
+        thread_id = ch.id if isinstance(ch, discord.Thread) else 0
 
-    # 映射 is_npc 狀態
-    # player = 0 (玩家角色), player_npc = 2 (自製NPC), official_npc = 1 (官方NPC)
-    if 類別.value == "player":
-        is_npc_code = 0
-        faction_default = "無"
-    elif 類別.value == "player_npc":
-        is_npc_code = 2
-        faction_default = "無"
-    else:
-        is_npc_code = 1
-        faction_default = "官方勢力"
+        if 類別.value == "player":
+            is_npc_code = 0
+            faction_default = "無"
+        elif 類別.value == "player_npc":
+            is_npc_code = 2
+            faction_default = "無"
+        else:
+            is_npc_code = 1
+            faction_default = "官方勢力"
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        current_count = 0
-        if thread_id:
-            async with db.execute("SELECT audit_count FROM profile_audits WHERE guild_id = ? AND thread_id = ?", (g_id, thread_id)) as a_cur:
-                rec = await a_cur.fetchone()
-                current_count = rec[0] if rec else 0
-
-        # ==================== 【一審階段】 ====================
-        if current_count == 0:
+        async with aiosqlite.connect(DB_PATH) as db:
+            current_count = 0
             if thread_id:
+                async with db.execute("SELECT audit_count FROM profile_audits WHERE guild_id = ? AND thread_id = ?", (g_id, thread_id)) as a_cur:
+                    rec = await a_cur.fetchone()
+                    current_count = rec[0] if rec else 0
+
+            # ==================== 【一審階段】 ====================
+            if current_count == 0:
+                if thread_id:
+                    await db.execute("""
+                        INSERT INTO profile_audits (guild_id, thread_id, char_name, audit_count, status)
+                        VALUES (?, ?, ?, 1, '初審通過')
+                        ON CONFLICT(guild_id, thread_id) DO UPDATE SET audit_count = 1, status = '初審通過', char_name = excluded.char_name
+                    """, (g_id, thread_id, c_name))
+                    await db.commit()
+
+                owner_mention = f"<@{post_author_id}>" if post_author_id > 0 else ""
+                embed = discord.Embed(
+                    title=f"📝【{c_name}】人設初審通過（1/2）",
+                    description=(
+                        f"審核管理員：{interaction.user.mention}\n"
+                        f"審核類別：**【{類別.name}】**\n\n"
+                        f"1、使用 `/查看`、`/背包` 確認檔案已登記\n"
+                        f"2、使用 `/任務` 查看角色新手任務情況\n"
+                        f"3、使用 `/檔案更新` 可自由調整代表色（16進位色碼如 `#FF69B4`）與感情/身分\n"
+                        f"4、稍後發放完獎勵同時會給予身分組，可自行探索！\n"
+                        f"5、若有不確定的指令可使用 `/檔案總覽` 確認\n\n"
+                        f"**以上！都確定無誤後請按本訊息 ✅**"
+                    ),
+                    color=0xF1C40F
+                )
+                embed.set_footer(text="提示：請等待第二位管理員進行終審核定以自動結算初始發放資金。")
+
+                sent_msg = await interaction.followup.send(content=owner_mention, embed=embed)
+                if 類別.value == "official_npc":
+                    try:
+                        await sent_msg.add_reaction("✅")
+                    except Exception:
+                        pass
+                return
+
+            # ==================== 【二審（終審）階段】 ====================
+            elif current_count == 1:
+                if thread_id:
+                    await db.execute("UPDATE profile_audits SET audit_count = 2, status = '終審完畢' WHERE guild_id = ? AND thread_id = ?", (g_id, thread_id))
+
+                st = parsed.get("stats", {})
+                v_hot = st.get("流量熱度", 50)
+                v_comm = st.get("商業價值", 50)
+                v_passer = st.get("路人緣", 50)
+                v_pr = st.get("公關", 50)
+                v_infl = st.get("影響指數", 50)
+                v_face = st.get("容貌", 50)
+                v_iq = st.get("才智", 50)
+                v_art = st.get("個人才藝", 50)
+
+                v_dance = st.get("唱跳", 50)
+                v_act = st.get("演繹", 50)
+                v_host = st.get("主持", 50)
+                v_sing = st.get("歌唱", 50)
+                v_var = st.get("綜藝", 50)
+                v_track_sum = v_dance + v_act + v_host + v_sing + v_var
+
+                m_hot = v_hot * 80
+                m_comm = v_comm * 100
+                m_passer = v_passer * 30
+                m_pr = v_pr * 20
+                m_infl = v_infl * 50
+                m_face = v_face * 40
+                m_iq = v_iq * 20
+                m_tracks = v_track_sum * 30
+                m_art = v_art * 40
+
+                total_initial_cash = (
+                    m_hot + m_comm + m_passer + m_pr + m_infl +
+                    m_face + m_iq + m_tracks + m_art
+                )
+
+                h = parsed.get("height", 175)
+                w = parsed.get("weight", 55)
+                f_health, f_app, bmi_val, warn_bmi = check_bmi_impact(h, w, 100, v_face)
+                st["容貌"] = f_app
+
+                assigned_uid = 0 if is_npc_code == 1 else (post_author_id if post_author_id > 0 else interaction.user.id)
+
                 await db.execute("""
-                    INSERT INTO profile_audits (guild_id, thread_id, char_name, audit_count, status)
-                    VALUES (?, ?, ?, 1, '初審通過')
-                    ON CONFLICT(guild_id, thread_id) DO UPDATE SET audit_count = 1, status = '初審通過', char_name = excluded.char_name
-                """, (g_id, thread_id, c_name))
+                    INSERT INTO characters (
+                        guild_id, user_id, name, stage_name, age, gender, job, faction,
+                        tags, relationship_status, created_at, is_npc, height, weight,
+                        nationality, education, orientation, primary_track, char_health,
+                        affiliation_type, affiliation_name, cash, bank, stats
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 10000, ?, ?)
+                    ON CONFLICT(guild_id, name) DO UPDATE SET
+                        stage_name = excluded.stage_name, age = excluded.age, gender = excluded.gender,
+                        job = excluded.job, height = excluded.height, weight = excluded.weight,
+                        nationality = excluded.nationality, education = excluded.education,
+                        orientation = excluded.orientation, primary_track = excluded.primary_track,
+                        char_health = excluded.char_health, affiliation_type = excluded.affiliation_type,
+                        affiliation_name = excluded.affiliation_name, stats = excluded.stats,
+                        bank = bank + excluded.bank, is_npc = excluded.is_npc
+                """, (
+                    g_id, assigned_uid, c_name, parsed.get("stage_name", c_name),
+                    parsed.get("age", 22), parsed.get("gender", "女"), parsed.get("job", "新人演員"),
+                    faction_default, parsed.get("tags", ""), parsed.get("relationship_status", "單身"),
+                    time.time(), is_npc_code, h, w, parsed.get("nationality", "本國"),
+                    parsed.get("education", "大學"), parsed.get("orientation", "保密"),
+                    parsed.get("primary_track", "演繹"), f_health,
+                    parsed.get("affiliation_type", "單打獨鬥"), parsed.get("affiliation_name", "無"),
+                    total_initial_cash, json.dumps(st, ensure_ascii=False)
+                ))
                 await db.commit()
 
-            owner_mention = f"<@{post_author_id}>" if post_author_id > 0 else ""
-            embed = discord.Embed(
-                title=f"📝【{c_name}】人設初審通過（1/2）",
-                description=(
-                    f"審核管理員：{interaction.user.mention}\n"
-                    f"審核類別：**【{類別.name}】**\n\n"
-                    f"1、使用 `/查看`、`/背包` 確認檔案已登記\n"
-                    f"2、使用 `/任務` 查看角色新手任務情況\n"
-                    f"3、使用 `/檔案更新` 可自由調整代表色（16進位色碼如 `#FF69B4`）與感情/身分\n"
-                    f"4、稍後發放完獎勵同時會給予身分組，可自行探索！\n"
-                    f"5、若有不確定的指令可使用 `/檔案總覽` 確認\n\n"
-                    f"**以上！都確定無誤後請按本訊息 ✅**"
-                ),
-                color=0xF1C40F
-            )
-            embed.set_footer(text="提示：請等待第二位管理員進行終審核定以自動結算初始發放資金。")
+                owner_mention = f"<@{assigned_uid}>" if assigned_uid > 0 else ""
+                embed = discord.Embed(
+                    title=f"🎉【{c_name}】終審通過，正式入籍！",
+                    description=(
+                        f"受審角色：**{c_name}**（藝名：{parsed.get('stage_name', '無')}）\n"
+                        f"審核類別：**【{類別.name}】** ｜ 終審管理員：{interaction.user.mention}\n\n"
+                        f"📋 **已登記入籍建檔：**\n"
+                        f"• 歸屬：`{parsed.get('affiliation_type', '單打獨鬥')}`（{parsed.get('affiliation_name', '無')}）\n"
+                        f"• 主攻賽道：【**{parsed.get('primary_track', '演繹')}**】\n"
+                        f"• 身材：`{h} cm` / `{w} kg` (BMI: `{bmi_val}`)\n"
+                        f"• 初始健康值：❤️ **{f_health} / 100**\n\n"
+                        f"💰 **核算資產入帳：**\n"
+                        f"• 零用金（現金）：**$10,000**\n"
+                        f"• 人設評級核發金（已入銀行）：**${total_initial_cash:,}**"
+                    ),
+                    color=0x2ECC71
+                )
+                if warn_bmi:
+                    embed.add_field(name="⚠️ 身材指數提醒", value=warn_bmi, inline=False)
 
-            
-            # 發送初審訊息
-            sent_msg = await interaction.followup.send(content=owner_mention, embed=embed)
-            
-            # 只有在審核「官方 NPC」時，機器人才自動加上 ✅ 表情；自身角色與玩家 NPC 則由玩家自己手動按
-            if 類別.value == "official_npc":
-                try:
-                    await sent_msg.add_reaction("✅")
-                except Exception:
-                    pass
-            return
+                calc_text = (
+                    f"```yaml\n"
+                    f"【初始金錢結算清單】\n"
+                    f"・流量熱度：({v_hot}) × 80 ＝ ${m_hot:,}\n"
+                    f"・商業價值：({v_comm}) × 100 ＝ ${m_comm:,}\n"
+                    f"・路人緣：({v_passer}) × 30 ＝ ${m_passer:,}\n"
+                    f"・公關：({v_pr}) × 20 ＝ ${m_pr:,}\n"
+                    f"・影響指數：({v_infl}) × 50 ＝ ${m_infl:,}\n"
+                    f"・容貌：({v_face}) × 40 ＝ ${m_face:,}\n"
+                    f"・才智：({v_iq}) × 20 ＝ ${m_iq:,}\n"
+                    f"・賽道總合：[{v_dance}+{v_act}+{v_host}+{v_sing}+{v_var}] × 30 ＝ ${m_tracks:,}\n"
+                    f"・個人才藝：({v_art}) × 40 ＝ ${m_art:,}\n"
+                    f"-----------------------------------------------\n"
+                    f"＝ 初始金幣合計：${total_initial_cash:,}\n"
+                    f"```"
+                )
 
-
-        # ==================== 【二審（終審）階段：初始金錢公式計算】 ====================
-        elif current_count == 1:
-            if thread_id:
-                await db.execute("UPDATE profile_audits SET audit_count = 2, status = '終審完畢' WHERE guild_id = ? AND thread_id = ?", (g_id, thread_id))
-
-            # 抓取各項數值進行加權
-            st = parsed.get("stats", {})
-            v_hot = st.get("流量熱度", 50)
-            v_comm = st.get("商業價值", 50)
-            v_passer = st.get("路人緣", 50)
-            v_pr = st.get("公關", 50)
-            v_infl = st.get("影響指數", 50)
-            v_face = st.get("容貌", 50)
-            v_iq = st.get("才智", 50)
-            v_art = st.get("個人才藝", 50)
-
-            # 五大賽道合計
-            v_dance = st.get("唱跳", 50)
-            v_act = st.get("演繹", 50)
-            v_host = st.get("主持", 50)
-            v_sing = st.get("歌唱", 50)
-            v_var = st.get("綜藝", 50)
-            v_track_sum = v_dance + v_act + v_host + v_sing + v_var
-
-            # 【初始金錢結算清單】公式計算
-            m_hot = v_hot * 80
-            m_comm = v_comm * 100
-            m_passer = v_passer * 30
-            m_pr = v_pr * 20
-            m_infl = v_infl * 50
-            m_face = v_face * 40
-            m_iq = v_iq * 20
-            m_tracks = v_track_sum * 30
-            m_art = v_art * 40
-
-            total_initial_cash = (
-                m_hot + m_comm + m_passer + m_pr + m_infl +
-                m_face + m_iq + m_tracks + m_art
-            )
-
-            # 計算身高體重 BMI
-            h = parsed.get("height", 175)
-            w = parsed.get("weight", 55)
-            f_health, f_app, bmi_val, warn_bmi = check_bmi_impact(h, w, 100, v_face)
-            st["容貌"] = f_app
-
-            assigned_uid = 0 if is_npc_code == 1 else (post_author_id if post_author_id > 0 else interaction.user.id)
-
-            # 正式寫入資料庫（資金匯入銀行）
-            await db.execute("""
-                INSERT INTO characters (
-                    guild_id, user_id, name, stage_name, age, gender, job, faction,
-                    tags, relationship_status, created_at, is_npc, height, weight,
-                    nationality, education, orientation, primary_track, char_health,
-                    affiliation_type, affiliation_name, cash, bank, stats
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 10000, ?, ?)
-                ON CONFLICT(guild_id, name) DO UPDATE SET
-                    stage_name = excluded.stage_name, age = excluded.age, gender = excluded.gender,
-                    job = excluded.job, height = excluded.height, weight = excluded.weight,
-                    nationality = excluded.nationality, education = excluded.education,
-                    orientation = excluded.orientation, primary_track = excluded.primary_track,
-                    char_health = excluded.char_health, affiliation_type = excluded.affiliation_type,
-                    affiliation_name = excluded.affiliation_name, stats = excluded.stats,
-                    bank = bank + excluded.bank, is_npc = excluded.is_npc
-            """, (
-                g_id, assigned_uid, c_name, parsed.get("stage_name", c_name),
-                parsed.get("age", 22), parsed.get("gender", "女"), parsed.get("job", "新人演員"),
-                faction_default, parsed.get("tags", ""), parsed.get("relationship_status", "單身"),
-                time.time(), is_npc_code, h, w, parsed.get("nationality", "本國"),
-                parsed.get("education", "大學"), parsed.get("orientation", "保密"),
-                parsed.get("primary_track", "演繹"), f_health,
-                parsed.get("affiliation_type", "單打獨鬥"), parsed.get("affiliation_name", "無"),
-                total_initial_cash, json.dumps(st, ensure_ascii=False)
-            ))
-            await db.commit()
-
-            owner_mention = f"<@{assigned_uid}>" if assigned_uid > 0 else ""
-            embed = discord.Embed(
-                title=f"🎉【{c_name}】終審通過，正式入籍！",
-                description=(
-                    f"受審角色：**{c_name}**（藝名：{parsed.get('stage_name', '無')}）\n"
-                    f"審核類別：**【{類別.name}】** ｜ 終審管理員：{interaction.user.mention}\n\n"
-                    f"📋 **已登記入籍建檔：**\n"
-                    f"• 歸屬：`{parsed.get('affiliation_type', '單打獨鬥')}`（{parsed.get('affiliation_name', '無')}）\n"
-                    f"• 主攻賽道：【**{parsed.get('primary_track', '演繹')}**】\n"
-                    f"• 身材：`{h} cm` / `{w} kg` (BMI: `{bmi_val}`)\n"
-                    f"• 初始健康值：❤️ **{f_health} / 100**\n\n"
-                    f"💰 **核算資產入帳：**\n"
-                    f"• 零用金（現金）：**$10,000**\n"
-                    f"• 人設評級核發金（已入銀行）：**${total_initial_cash:,}**"
-                ),
-                color=0x2ECC71
-            )
-            if warn_bmi:
-                embed.add_field(name="⚠️ 身材指數提醒", value=warn_bmi, inline=False)
-
-            # 若未隱藏算式，公開展示結算單；若隱藏則僅傳送給管理員
-            calc_text = (
-                f"```yaml\n"
-                f"【初始金錢結算清單】\n"
-                f"・流量熱度：({v_hot}) × 80 ＝ ${m_hot:,}\n"
-                f"・商業價值：({v_comm}) × 100 ＝ ${m_comm:,}\n"
-                f"・路人緣：({v_passer}) × 30 ＝ ${m_passer:,}\n"
-                f"・公關：({v_pr}) × 20 ＝ ${m_pr:,}\n"
-                f"・影響指數：({v_infl}) × 50 ＝ ${m_infl:,}\n"
-                f"・容貌：({v_face}) × 40 ＝ ${m_face:,}\n"
-                f"・才智：({v_iq}) × 20 ＝ ${m_iq:,}\n"
-                f"・賽道總合：[{v_dance}+{v_act}+{v_host}+{v_sing}+{v_var}] × 30 ＝ ${m_tracks:,}\n"
-                f"・個人才藝：({v_art}) × 40 ＝ ${m_art:,}\n"
-                f"-----------------------------------------------\n"
-                f"＝ 初始金幣合計：${total_initial_cash:,}\n"
-                f"```"
-            )
-
-            if not 隱藏算式明細:
-                embed.add_field(name="📊 初始金幣審核結算清單", value=calc_text, inline=False)
-                await interaction.followup.send(content=owner_mention, embed=embed)
+                if not 隱藏算式明細:
+                    embed.add_field(name="📊 初始金幣審核結算清單", value=calc_text, inline=False)
+                    await interaction.followup.send(content=owner_mention, embed=embed)
+                else:
+                    await interaction.followup.send(content=owner_mention, embed=embed)
+                    try:
+                        await interaction.user.send(f"📋 **【管理員審核後台算式存根 — {c_name}】**\n{calc_text}")
+                    except Exception:
+                        pass
+                return
             else:
-                await interaction.followup.send(content=owner_mention, embed=embed)
-                try:
-                    await interaction.user.send(f"📋 **【管理員審核後台算式存根 — {c_name}】**\n{calc_text}")
-                except Exception:
-                    pass
-            return
-        else:
-            await interaction.followup.send(f"⚠️ 角色【{c_name}】早已通過雙重審核並已入籍！", ephemeral=True)
+                await interaction.followup.send(f"⚠️ 角色【{c_name}】早已通過雙重審核並已入籍！", ephemeral=True)
+    except Exception as e:
+        traceback.print_exc()
+        await interaction.followup.send(f"❌ 審核執行發生錯誤：`{e}`", ephemeral=True)
+
 
 # -------------------- 角色檔案按鈕組：ProfileMainView --------------------
 class ProfileMainView(discord.ui.View):
