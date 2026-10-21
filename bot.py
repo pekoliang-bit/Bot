@@ -2213,8 +2213,9 @@ class ProfileUpdateStepView(discord.ui.View):
 
                 # 依選擇的項目彈出對應輸入框
                 class ValueModal(discord.ui.Modal):
-                    def __init__(self, target_field: str, field_label: str):
+                    def __init__(self, c_name: str, target_field: str, field_label: str):
                         super().__init__(title=f"修改【{c_name}】{field_label}")
+                        self.c_name = c_name
                         self.target_field = target_field
                         
                         hint_map = {
@@ -2233,6 +2234,7 @@ class ProfileUpdateStepView(discord.ui.View):
                             max_length=50
                         )
                         self.add_item(self.val_input)
+
 
                     async def on_submit(self, m_inter: discord.Interaction):
                         new_text = self.val_input.value.strip()
