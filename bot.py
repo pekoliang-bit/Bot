@@ -2183,7 +2183,7 @@ async def view_npc_cmd(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, view=NPCLobbySelectView(interaction.guild_id), ephemeral=True)
 
-# -------------------- ProfileUpdateStepView（選單式個資更新） --------------------
+# -------------------- ProfileUpdateStepView（純下拉選單式） --------------------
 class ProfileUpdateStepView(discord.ui.View):
     def __init__(self, char_name: str, guild_id: int, is_admin: bool):
         super().__init__(timeout=180)
@@ -2193,7 +2193,7 @@ class ProfileUpdateStepView(discord.ui.View):
 
     @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary, row=0)
     async def update_base(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 建立欄位選擇選單，不用再手動打字
+        # 建立欄位選擇選單
         class FieldSelect(discord.ui.Select):
             def __init__(self, c_name: str, g_id: int):
                 self.c_name = c_name
@@ -2203,21 +2203,23 @@ class ProfileUpdateStepView(discord.ui.View):
                     discord.SelectOption(label="代表色", value="theme_color", description="設定代表色色碼 (如 #FF69B4)", emoji="🎨"),
                     discord.SelectOption(label="職業/身分", value="job", description="修改藝人職業身分", emoji="💼"),
                     discord.SelectOption(label="感情狀況", value="relationship_status", description="修改感情狀態 (單身、隱婚傳聞等)", emoji="💌"),
-                    discord.SelectOption(label="CP/伴侶", value="cp_info", description="格式: 名字/關係 (例如: 某某/戀人)", emoji="💕"),
+                    discord.SelectOption(label="CP/伴侶", value="cp_info", description="格式: 名字/關係 (例如: 某某/伴侶)", emoji="💕"),
                     discord.SelectOption(label="特質標籤", value="tags", description="修改外號與特質 (以頓號或空格隔開)", emoji="🏷️")
                 ]
-                super().__init__(placeholder="請選擇欲修改的資料欄位...", options=opts)
+                super().__init__(placeholder="請點選欲修改的個資項目...", options=opts)
 
             async def callback(self, s_inter: discord.Interaction):
                 chosen_field = self.values[0]
 
-                # 依選擇的項目彈出對應輸入框
+                # 依選擇的項目彈出專屬輸入框
                 class ValueModal(discord.ui.Modal):
-                    def __init__(self, c_name: str, target_field: str, field_label: str):
+                    def __init__(self, c_name: str, g_id: int, target_field: str, field_label: str):
                         super().__init__(title=f"修改【{c_name}】{field_label}")
                         self.c_name = c_name
+                        self.g_id = g_id
                         self.target_field = target_field
-                        
+                        self.field_label = field_label
+
                         hint_map = {
                             "debut_years": "請填寫年數（例如 5 代表出道 5 年，0 代表未出道）",
                             "theme_color": "請填寫16進位色碼（例如 #FF69B4）",
@@ -2235,7 +2237,6 @@ class ProfileUpdateStepView(discord.ui.View):
                         )
                         self.add_item(self.val_input)
 
-
                     async def on_submit(self, m_inter: discord.Interaction):
                         new_text = self.val_input.value.strip()
 
@@ -2247,34 +2248,38 @@ class ProfileUpdateStepView(discord.ui.View):
                                     return
                                 y_val = int(match_num.group())
 
-                                async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as cur:
+                                async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (self.g_id, self.c_name)) as cur:
                                     c_row = await cur.fetchone()
                                     cur_age = c_row[0] if (c_row and c_row[0]) else 20
 
                                 d_age = max(1, cur_age - y_val) if y_val > 0 else cur_age
-                                await db.execute("UPDATE characters SET debut_years = ?, debut_age = ? WHERE guild_id = ? AND name = ?", (y_val, d_age, g_id, c_name))
+                                await db.execute("""
+                                    UPDATE characters 
+                                    SET debut_years = ?, debut_age = ? 
+                                    WHERE guild_id = ? AND name = ?
+                                """, (y_val, d_age, self.g_id, self.c_name))
                                 await db.commit()
-                                
+
                                 title_text = get_debut_title(y_val, d_age)
-                                await m_inter.response.send_message(f"✅ 【{c_name}】的出道年資已更新為 **{y_val} 年**！\n🌟 當前星途稱謂：**{title_text}**", ephemeral=True)
+                                await m_inter.response.send_message(f"✅ 【{self.c_name}】的出道年資已更新為 **{y_val} 年**！\n🌟 當前星途稱謂：**{title_text}**", ephemeral=True)
                                 return
 
                             elif self.target_field == "theme_color":
-                                await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                                await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (new_text, self.g_id, self.c_name))
                             elif self.target_field == "job":
-                                await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                                await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (new_text, self.g_id, self.c_name))
                             elif self.target_field == "relationship_status":
-                                await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                                await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (new_text, self.g_id, self.c_name))
                             elif self.target_field == "tags":
-                                await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (new_text, g_id, c_name))
+                                await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (new_text, self.g_id, self.c_name))
                             elif self.target_field == "cp_info":
                                 parts = re.split(r"[/,，\s]+", new_text)
                                 cp_obj = {"target": parts[0], "relation": parts[1] if len(parts) > 1 else "伴侶"}
-                                await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), g_id, c_name))
+                                await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.g_id, self.c_name))
 
                             await db.commit()
 
-                        await m_inter.response.send_message(f"✅ 成功將【{c_name}】的 **{s_inter.data['values'][0]}** 更新為：`{new_text}`！", ephemeral=True)
+                        await m_inter.response.send_message(f"✅ 成功將【{self.c_name}】的 **{self.field_label}** 更新為：`{new_text}`！", ephemeral=True)
 
                 label_lookup = {
                     "debut_years": "出道年資",
@@ -2284,12 +2289,11 @@ class ProfileUpdateStepView(discord.ui.View):
                     "cp_info": "CP伴侶",
                     "tags": "特質標籤"
                 }
-                await s_inter.response.send_modal(ValueModal(self.c_name, chosen_field, label_lookup.get(chosen_field, "資料")))
+                await s_inter.response.send_modal(ValueModal(self.c_name, self.g_id, chosen_field, label_lookup.get(chosen_field, "資料")))
 
-
-        select_view = discord.ui.View()
+        select_view = discord.ui.View(timeout=180)
         select_view.add_item(FieldSelect(self.char_name, self.guild_id))
-        await interaction.response.send_message(f"請自下方選單挑選欲為【{self.char_name}】修改的欄位：", view=select_view, ephemeral=True)
+        await interaction.response.send_message(f"📋 請從下方下拉選單中，選擇欲為【{self.char_name}】修改的欄位：", view=select_view, ephemeral=True)
 
     @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success, row=0)
     async def update_achievement(self, interaction: discord.Interaction, button: discord.ui.Button):
