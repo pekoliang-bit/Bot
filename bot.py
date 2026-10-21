@@ -433,7 +433,7 @@ async def process_faction_tax(guild_id: int, char_name: str, work_title: str, re
             await db.commit()
             return f"\n🚩 陣營抽成：已自動向所屬【{f_name}】上繳 **${tax_amt:,}** 公款（稅率 {int(tax_rate*100)}%）。"
     return ""
-    def get_debut_title(debut_years: int, debut_age: int = None) -> str:
+def get_debut_title(debut_years: int, debut_age: int = None) -> str:
     if not debut_years or debut_years <= 0:
         return "新秀 / 未正式出道（接 1 個通告即可正式出道）"
     
