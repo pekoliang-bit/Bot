@@ -125,6 +125,15 @@ def resolve_tag_conflicts(current_tags: list, new_tag: str) -> list:
     filtered = [t for t in current_tags if t not in conflicts and t != new_tag]
     filtered.append(new_tag)
     return filtered[-5:]
+    # -------------------- 現實每月（遊戲每年）行動點歸零清算排程 --------------------
+@tasks.loop(hours=720) # 現實 30 天 (約 1 個月) 循環一次
+async def yearly_action_points_reset():
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 將全服所有角色的未消耗行動點重置為 0 (不跨年保留)
+        await db.execute("UPDATE characters SET action_points = 0 WHERE action_points > 0")
+        await db.commit()
+    print("🔄【新年結算】全服藝人未使用的日常行動點已全額清零重置！")
+
     # -------------------- 社群貼圖與留言即時監聽 --------------------
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
@@ -828,6 +837,30 @@ async def init_db():
                 relation_type TEXT,
                 created_at REAL,
                 PRIMARY KEY (guild_id, from_char, to_char)
+            )
+        """)
+        # 擴充 characters 欄位：行動點 action_points (預設 0)
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN action_points INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+        # 31. 地點分類與動作行為設定表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS action_places (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                category TEXT,
+                action_name TEXT,
+                description TEXT,
+                cost_ap INTEGER DEFAULT 1,
+                cost_money INTEGER DEFAULT 0,
+                reward_money INTEGER DEFAULT 0,
+                health_change INTEGER DEFAULT 0,
+                fixed_stat_change TEXT DEFAULT '',
+                random_stat_types TEXT DEFAULT '',
+                special_rewards TEXT DEFAULT '',
+                UNIQUE(guild_id, category, action_name)
             )
         """)
 
@@ -1645,7 +1678,7 @@ class ProfileMainView(discord.ui.View):
         items = [f"• 對象：**{to_c}** ｜ 傾向：【{t}】 ｜ 羈絆：💖{aff} ｜ 狀況：`{desc}`" for to_c, t, aff, desc in rows]
         p_view = PagedDetailView(f"💬【{self.char_name}】的交際關係網絡", items, 0xE91E63)
         await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
-# -------------------- 通用角色卡片渲染函式 --------------------
+# -------------------- 通用角色卡片渲染函式（按段落排版升級版） --------------------
 async def render_character_card(interaction: discord.Interaction, target_name: str, ephemeral: bool = True):
     g_id = interaction.guild_id
 
@@ -1717,8 +1750,12 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
         ),
         inline=False
     )
+
     cp_obj = json.loads(cp_json) if cp_json else {}
-    cp_text = f"💕 CP: **{cp_obj.get('target')}** ({cp_obj.get('relation')})" if cp_obj.get("target") else "無"
+    cp_target = cp_obj.get("target")
+    cp_relation = cp_obj.get("relation", "伴侶")
+    cp_text = f"💕 CP: **{cp_target}** ({cp_relation})" if cp_target else "無"
+
     embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
     embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 手頭現金: ${cash:,}\n• 銀行存款: ${bank:,}", inline=True)
 
@@ -1728,9 +1765,55 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
             asset_lines.append(f"• [旗下公司] {c[0]} ({c[1]})")
     embed.add_field(name="🚗 產權與名下企業", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
 
+    # ----------------- 數值排版重新架構 -----------------
     stats = json.loads(stats_json) if stats_json else {}
-    stat_texts = [f"{k}: **{v}**" for k, v in stats.items() if k not in hidden_stats_set]
-    embed.add_field(name="📊 核心演藝數值", value=" ｜ ".join(stat_texts) if stat_texts else "尚未登記任何公開數值", inline=False)
+
+    # 1. 商業名氣（直向條列）
+    commercial_lines = [
+        f"• 流量熱度：**{stats.get('流量熱度', 0):,}**",
+        f"• 商業價值：**{stats.get('商業價值', 0):,}**",
+        f"• 影響指數：**{stats.get('影響指數', 0):,}**",
+        f"• 路人緣：**{stats.get('路人緣', 0):,}**",
+        f"• 公關：**{stats.get('公關', 0):,}**"
+    ]
+    embed.add_field(name="📈 商業名氣", value="\n".join(commercial_lines), inline=True)
+
+    # 2. 藝能實力（主攻賽道置頂，其餘四賽道依次接續）
+    all_tracks = ["歌唱", "唱跳", "主持", "綜藝", "演繹"]
+    main_track = primary_track if primary_track in all_tracks else "演繹"
+    other_tracks = [t for t in all_tracks if t != main_track]
+
+    # 其餘四個賽道數值格式化排版
+    other_tracks_str = " ｜ ".join([f"{t}: **{stats.get(t, 0)}**" for t in other_tracks])
+
+    art_lines = [
+        f"• 容貌：**{stats.get('容貌', 0)}**",
+        f"• 才智：**{stats.get('才智', 0)}**",
+        f"• 主攻賽道【{main_track}】：**{stats.get(main_track, 0)}**",
+        f"  └ 其他賽道：{other_tracks_str}",
+        f"• 個人才藝：**{stats.get('個人才藝', 0)}**"
+    ]
+    embed.add_field(name="🎭 藝能實力", value="\n".join(art_lines), inline=False)
+
+    # 3. 系統動態追蹤與 CP 好感度
+    cp_score_display = f"{cp_target}（{cp_obj.get('affection', 100)} 分 營業中）" if cp_target else "無"
+    dynamic_lines = [
+        f"• 死忠粉絲數：**{stats.get('死忠粉絲數', 0):,}** 人",
+        f"• 活躍黑粉數：**{stats.get('活躍黑粉數', 0):,}** 人",
+        f"• 大眾認知度：**{stats.get('大眾認知度', 0):,}**",
+        f"• CP好感度：{cp_score_display}"
+    ]
+    embed.add_field(name="📊 動態追蹤與社群指標", value="\n".join(dynamic_lines), inline=False)
+
+    # 其餘自訂或自建類型公開數值補充（若有）
+    custom_type_keys = [k for k in stats.keys() if k not in (
+        ["流量熱度", "商業價值", "影響指數", "路人緣", "公關", "容貌", "才智", "個人才藝",
+         "死忠粉絲數", "活躍黑粉數", "大眾認知度"] + all_tracks
+    ) and k not in hidden_stats_set]
+
+    if custom_type_keys:
+        custom_lines = [f"• {k}：**{stats[k]}**" for k in custom_type_keys]
+        embed.add_field(name="✨ 其他特別數值", value="\n".join(custom_lines), inline=False)
 
     if img_url and img_url.startswith("http"):
         embed.set_thumbnail(url=img_url)
@@ -1740,6 +1823,7 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
         await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
     else:
         await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
+
 
 # -------------------- 指令：/查看 --------------------
 @bot.tree.command(name="查看", description="調閱自己持有的角色或自設 NPC 檔案面板（自動列出個人名下所有角色）")
@@ -2622,6 +2706,11 @@ async def shop(interaction: discord.Interaction, 角色名: str):
                 else:
                     remain = price - cash
                     await db.execute("UPDATE characters SET cash = 0, bank = bank - ? WHERE guild_id = ? AND name = ?", (remain, g_id, c_name))
+                # 若購買的是行動點，直接為角色充值 AP
+                if "行動點" in i_name or "AP" in i_name or "精力" in i_name:
+                    points_bought = max(1, price // 500)
+                    await db.execute("UPDATE characters SET action_points = action_points + ? WHERE guild_id = ? AND name = ?", (points_bought, g_id, c_name))
+                    seller_info += f"\n⚡ 已成功為 **{c_name}** 充值 **+{points_bought}** 點行動點！"
 
                 seller_info = ""
                 async with db.execute("SELECT id FROM companies WHERE guild_id = ? AND name = ?", (g_id, seller)) as c_cur:
@@ -4319,11 +4408,13 @@ class MasterDirectoryView(discord.ui.View):
         text = (
             "**👤 玩家常規指令列表：**\n"
             "• `/檔案建立`：建立玩家角色或玩家自設 NPC\n"
-            "• `/查看`：調閱個人/NPC面板、成就、寵物、傳聞與專屬劇情\n"
-            "• `/劇情觸發`：滿足門檻後，與官方 NPC 觸發帶立繪與分支的對話劇情\n"
-            "• `/社交關注`、`/社交拉黑`：社群動態互動，影響雙方粉絲與黑粉\n"
-            "• `/背包`、`/使用`、`/贈予`：道具管理、屬性即時成長與送禮（同鄉加成）\n"
-            "• `/商城`、`/售物`：選購官方/二手/公司門市商品，原創作品享才智溢價\n"
+            "• `/查看`：調閱個人名下角色/自設NPC面板、成就、寵物與傳聞\n"
+            "• `/npc查看`：開啟官方 NPC 或大眾路人查閱大廳（按鈕分頁挑選）\n"
+            "• `/動作`：消耗行動點進行打工、上課、自主排練或應酬（影響健康與屬性）\n"
+            "• `/劇情觸發`：滿足門檻後，與官方 NPC 觸發帶頭貼立繪的分支互動劇情\n"
+            "• `/社交關注`、`/社交拉黑`：社群動態互動，影響雙方粉絲與黑粉變化\n"
+            "• `/背包`、`/使用`、`/贈予`：道具管理、屬性成長、餵食寵物與同鄉好感贈禮\n"
+            "• `/商城`、`/售物`：購買商品/行動點、二手寄售（創作作品享才智溢價）\n"
             "• `/存錢`、`/取錢`、`/轉錢`：銀行金融交易與角色互轉\n"
             "• `/任務`、`/回報任務`：查看公告看板、回報文章（自動陣營抽稅與地位晉升）\n"
             "• `/陣營`：查看所屬陣營、捐獻公款、購買全體加成或退陣\n"
@@ -4337,11 +4428,12 @@ class MasterDirectoryView(discord.ui.View):
         text = (
             "**👑 管理員專用指令列表：**\n"
             "• `/官方npc登記`：登記全域官方重要 NPC\n"
-            "• `/路人轉官方`：一鍵將熱門動態路人升格為官方 NPC（保留所有數值外觀）\n"
+            "• `/路人轉官方`：一鍵將熱門動態路人升格為官方 NPC（保留所有數值立繪）\n"
+            "• `/動作設定`：自訂地點分類與行為（消耗AP/金錢、排練隨機1~15點、健康、人脈）\n"
             "• `/劇本設定`：為官方 NPC 錄入多分支劇情劇本、按鈕與解鎖條件\n"
-            "• `/社群頻道設定`、`/社群規則管理`：設定社群動態監聽區與表情/關鍵字數值規則\n"
+            "• `/社群頻道設定`、`/社群規則管理`：設定社群監聽頻道與表情/關鍵字數值結算\n"
             "• `/大眾路人大量發生中`：全自動抽選姓名、立繪、數值生成路人\n"
-            "• `/路人資源補給`：補充路人相冊與姓名、劇本角色席位、代言庫\n"
+            "• `/路人資源補給`：補充路人相冊多圖、姓名、劇本角色席位與代言庫\n"
             "• `/路人生態設定`：設定路人每 48 小時屬性與金錢浮動規則\n"
             "• `/數值登記`：加減數值、自訂新增數值類型、管理隱藏數值\n"
             "• `/任務新增`：發布各類別任務、成就、榮譽與認知度限制\n"
@@ -4784,6 +4876,328 @@ async def social_block_cmd(interaction: discord.Interaction, 你的角色名: st
         f"• **{t_name}** 爭議輿論升級：活躍黑粉數 **+50** 人！{backfire_msg}"
     )
     await interaction.response.send_message(embed=embed)
+# -------------------- 指令：/動作設定 --------------------
+@bot.tree.command(name="動作設定", description="【管理員專用】設定或修改地點動作（消耗行動點/金錢、隨機數值、健康增減、人脈特殊獎勵）")
+@app_commands.default_permissions(administrator=True)
+@app_commands.choices(操作=[
+    app_commands.Choice(name="新增/修改動作", value="save"),
+    app_commands.Choice(name="刪除動作", value="delete")
+])
+@app_commands.describe(
+    操作="選擇新增/修改或刪除",
+    分類="地點分類名稱（例如: 歌舞練習室、醫院診所、深夜酒吧、健身房）",
+    動作名稱="具體動作行為（例如: 打工兼職、名師私教、自主排練、應酬喝酒）",
+    說明描述="點選時看到的說明文字",
+    消耗行動點="執行此動作需消耗的行動點 (預設 1)",
+    花費金錢="需扣除的現金/存款 (例如上課私教需花錢，填 0 則不花錢)",
+    獲得金錢="打工兼職可賺取的金錢 (填 0 則不給)",
+    健康增減="扣除填負數 (如喝酒扣 -10)，恢復填正數 (如去醫院 +30，運動 +15)",
+    固定數值增減="固定增減的數值，格式: 容貌+5 才智+10",
+    排練隨機數值賽道="單純消耗AP排練隨機獲得 1~15 點的屬性名稱，多項以空白隔開 (例如: 唱跳 歌唱 演繹)",
+    特殊際遇獎勵="選填：獲得人脈、工作合約或道具 (格式: 物品*數量 或 人脈:知名製作人)"
+)
+async def set_action_place(
+    interaction: discord.Interaction,
+    操作: app_commands.Choice[str],
+    分類: str,
+    動作名稱: str,
+    說明描述: str = "日常演藝歷練行動",
+    消耗行動點: int = 1,
+    花費金錢: int = 0,
+    獲得金錢: int = 0,
+    健康增減: int = 0,
+    固定數值增減: str = "",
+    排練隨機數值賽道: str = "",
+    特殊際遇獎勵: str = ""
+):
+    g_id = interaction.guild_id
+    cat = 分類.strip()
+    act = 動作名稱.strip()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        if 操作.value == "delete":
+            await db.execute("DELETE FROM action_places WHERE guild_id = ? AND category = ? AND action_name = ?", (g_id, cat, act))
+            await db.commit()
+            await interaction.response.send_message(f"🗑️ 已成功刪除【{cat}】下的動作【{act}】！", ephemeral=True)
+            return
+
+        await db.execute("""
+            INSERT INTO action_places (
+                guild_id, category, action_name, description, cost_ap, cost_money,
+                reward_money, health_change, fixed_stat_change, random_stat_types, special_rewards
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, category, action_name) DO UPDATE SET
+                description = excluded.description,
+                cost_ap = excluded.cost_ap,
+                cost_money = excluded.cost_money,
+                reward_money = excluded.reward_money,
+                health_change = excluded.health_change,
+                fixed_stat_change = excluded.fixed_stat_change,
+                random_stat_types = excluded.random_stat_types,
+                special_rewards = excluded.special_rewards
+        """, (
+            g_id, cat, act, 說明描述.strip(), 消耗行動點, 花費金錢,
+            獲得金錢, 健康增減, 固定數值增減.strip(), 排練隨機數值賽道.strip(), 特殊際遇獎勵.strip()
+        ))
+        await db.commit()
+
+    embed = discord.Embed(title="📍 地點動作設定成功", color=0x2ECC71)
+    embed.description = f"**地點分類**：【{cat}】\n**動作名稱**：**{act}**\n• 簡述：`{說明描述.strip()}`"
+    embed.add_field(name="消耗與成本", value=f"• 消耗行動點：`{消耗行動點} AP`\n• 消耗金錢：`${花費金錢:,}`", inline=True)
+    embed.add_field(name="金錢與體能收穫", value=f"• 獲得打工酬勞：`${獲得金錢:,}`\n• 健康值增減：`{健康增減:+}`", inline=True)
+    if 固定數值增減.strip():
+        embed.add_field(name="固定屬性", value=f"`{固定數值增減.strip()}`", inline=False)
+    if 排練隨機數值賽道.strip():
+        embed.add_field(name="隨機排練成長 (1~15點)", value=f"`{排練隨機數值賽道.strip()}`", inline=False)
+    if 特殊際遇獎勵.strip():
+        embed.add_field(name="特殊機遇/道具/人脈", value=f"`{特殊際遇獎勵.strip()}`", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+# -------------------- 指令：/動作（地點分類與行動結算） --------------------
+class ExecuteActionSelect(discord.ui.Select):
+    def __init__(self, char_name: str, guild_id: int, category: str, actions: list):
+        self.char_name = char_name
+        self.guild_id = guild_id
+        self.category = category
+
+        opts = []
+        for act in actions[:25]:
+            (
+                a_id, a_name, desc, cost_ap, cost_money,
+                rew_money, hp_chg, fixed_stat, rand_stats, spec_rew
+            ) = act
+
+            cost_info = f"消耗: {cost_ap}AP"
+            if cost_money > 0:
+                cost_info += f" ｜ ${cost_money:,}"
+            if rew_money > 0:
+                cost_info += f" ｜ 賺取 ${rew_money:,}"
+            if hp_chg != 0:
+                cost_info += f" ｜ 健康{hp_chg:+}"
+
+            opts.append(discord.SelectOption(
+                label=a_name,
+                value=str(a_id),
+                description=cost_info[:50]
+            ))
+
+        super().__init__(placeholder=f"請選擇在【{category}】執行的動作...", options=opts)
+
+    async def callback(self, interaction: discord.Interaction):
+        act_id = int(self.values[0])
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            # 1. 抓取角色資料
+            async with db.execute("""
+                SELECT action_points, cash, bank, char_health, stats FROM characters
+                WHERE guild_id = ? AND name = ?
+            """, (self.guild_id, self.char_name)) as c_cur:
+                char_row = await c_cur.fetchone()
+
+            if not char_row:
+                await interaction.response.send_message("❌ 查無角色檔案！", ephemeral=True)
+                return
+
+            ap, cash, bank, hp, stats_json = char_row
+            stats = json.loads(stats_json) if stats_json else {}
+
+            # 2. 抓取該動作具體設定
+            async with db.execute("""
+                SELECT action_name, description, cost_ap, cost_money,
+                       reward_money, health_change, fixed_stat_change, random_stat_types, special_rewards
+                FROM action_places WHERE id = ?
+            """, (act_id,)) as a_cur:
+                action_data = await a_cur.fetchone()
+
+            if not action_data:
+                await interaction.response.send_message("❌ 該動作不存在或已被移除！", ephemeral=True)
+                return
+
+            (
+                a_name, desc, cost_ap, cost_money,
+                rew_money, hp_chg, fixed_stat, rand_stats, spec_rew
+            ) = action_data
+
+            # 3. 資源與條件檢驗
+            if ap < cost_ap:
+                await interaction.response.send_message(
+                    f"❌ **【行動點不足】** 執行【{a_name}】需要 **{cost_ap}** 點行動點（當前僅有 `{ap}` AP）！\n"
+                    f"可在 `/商城` 購買行動點（1點 $500，每年重置）。",
+                    ephemeral=True
+                )
+                return
+
+            total_money = cash + bank
+            if cost_money > 0 and total_money < cost_money:
+                await interaction.response.send_message(
+                    f"❌ **【資金不足】** 報名/消費【{a_name}】需要 **${cost_money:,}**（當前手頭與存款總額不足）！",
+                    ephemeral=True
+                )
+                return
+
+            # 4. 扣減與發放金錢
+            if cost_money > 0:
+                if cash >= cost_money:
+                    await db.execute("UPDATE characters SET cash = cash - ? WHERE guild_id = ? AND name = ?", (cost_money, self.guild_id, self.char_name))
+                else:
+                    rem = cost_money - cash
+                    await db.execute("UPDATE characters SET cash = 0, bank = bank - ? WHERE guild_id = ? AND name = ?", (rem, self.guild_id, self.char_name))
+
+            if rew_money > 0:
+                await db.execute("UPDATE characters SET cash = cash + ? WHERE guild_id = ? AND name = ?", (rew_money, self.guild_id, self.char_name))
+
+            # 扣除行動點
+            new_ap = ap - cost_ap
+            # 健康值增減 (上限 100，最低 10)
+            new_hp = max(10, min(100, (hp or 100) + hp_chg))
+
+            # 5. 結算固定數值
+            earned_notes = []
+            if fixed_stat:
+                for part in re.split(r"[,，、\s]+", fixed_stat):
+                    m = re.search(r"([^\d+-]+)([+-]?\d+)", part)
+                    if m:
+                        sk, sv = m.group(1).strip(), int(m.group(2))
+                        stats[sk] = max(0, stats.get(sk, 0) + sv)
+                        sign = "+" if sv >= 0 else ""
+                        earned_notes.append(f"{sk} {sign}{sv}")
+
+            # 6. 結算隨機數值 (純排練模式：限制只能得到 1~15 點數值)
+            if rand_stats:
+                stat_targets = [s.strip() for s in re.split(r"[,，、\s]+", rand_stats) if s.strip()]
+                for target_stat in stat_targets:
+                    random_gain = random.randint(1, 15) # 嚴格限制 1 到 15 的數值
+                    stats[target_stat] = stats.get(target_stat, 0) + random_gain
+                    earned_notes.append(f"🎯 {target_stat} +{random_gain} (隨機突破)")
+
+            # 7. 特殊際遇與物品/人脈結算
+            special_notes = []
+            if spec_rew:
+                tokens = re.split(r"[,，\n\r\s]+", spec_rew.strip())
+                for tk in tokens:
+                    if not tk: continue
+                    # 人脈際遇
+                    if "人脈" in tk:
+                        special_notes.append(f"🤝 **【人脈結識】** {tk}")
+                    # 道具發放
+                    else:
+                        m_item = re.match(r"^([^*xX×]+)(?:[*xX×](\d+))?$", tk)
+                        it_name = m_item.group(1).strip() if m_item else tk.strip()
+                        it_amt = int(m_item.group(2)) if (m_item and m_item.group(2)) else 1
+
+                        async with db.execute("SELECT id FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (self.guild_id, self.char_name, it_name)) as inv_cur:
+                            inv_row = await inv_cur.fetchone()
+                            if inv_row:
+                                await db.execute("UPDATE inventory SET amount = amount + ? WHERE id = ?", (it_amt, inv_row[0]))
+                            else:
+                                await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, ?, '特殊行動邂逅')", (self.guild_id, self.char_name, it_name, it_amt))
+                        special_notes.append(f"🎁 獲得物品：`{it_name} ×{it_amt}`")
+
+            # 8. 更新回 characters
+            await db.execute("""
+                UPDATE characters
+                SET action_points = ?, char_health = ?, stats = ?
+                WHERE guild_id = ? AND name = ?
+            """, (new_ap, new_hp, json.dumps(stats, ensure_ascii=False), self.guild_id, self.char_name))
+            await db.commit()
+
+        # 地位等級檢驗
+        await check_and_update_rank(self.guild_id, self.char_name, interaction.channel)
+
+        # 9. 成果反饋
+        embed = discord.Embed(title=f"🎬 行動結算：【{self.char_name}】— {a_name}", color=0x2ECC71)
+        embed.description = f"*{desc}*\n\n• 剩餘行動點：`{new_ap} AP` (-{cost_ap})\n• 當前健康度：❤️ **{new_hp} / 100** ({hp_chg:+})"
+        
+        if cost_money > 0:
+            embed.add_field(name="支出花費", value=f"-${cost_money:,}", inline=True)
+        if rew_money > 0:
+            embed.add_field(name="打工收入", value=f"+${rew_money:,}", inline=True)
+        if earned_notes:
+            embed.add_field(name="成長收穫", value="\n".join(earned_notes), inline=False)
+        if special_notes:
+            embed.add_field(name="特殊機遇與收穫", value="\n".join(special_notes), inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="動作", description="消耗行動點進行打工、上課、排練或特殊行動（外觀類似商城分類選單）")
+@app_commands.describe(角色名="欲執行日常行動的角色名稱")
+async def action_cmd(interaction: discord.Interaction, 角色名: str):
+    g_id = interaction.guild_id
+    c_name = 角色名.strip()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, action_points, char_health FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as cur:
+            char_row = await cur.fetchone()
+
+        if not char_row:
+            await interaction.response.send_message(f"❌ 查無角色【{c_name}】！", ephemeral=True)
+            return
+
+        u_id, ap, hp = char_row
+        if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 你只能為自己的角色執行日常行動！", ephemeral=True)
+            return
+
+        async with db.execute("SELECT DISTINCT category FROM action_places WHERE guild_id = ?", (g_id,)) as cur:
+            categories = [row[0] for row in await cur.fetchall()]
+
+    if not categories:
+        categories = ["歌舞練習室", "健身中心", "綜合醫院", "深夜酒館"]
+
+    class PlaceCategoryView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+            for cat_name in categories[:20]:
+                btn = discord.ui.Button(label=cat_name[:20], style=discord.ButtonStyle.primary)
+                btn.callback = self.make_cb(cat_name)
+                self.add_item(btn)
+
+        def make_cb(self, category_name: str):
+            async def cb(inter: discord.Interaction):
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute("""
+                        SELECT id, action_name, description, cost_ap, cost_money,
+                               reward_money, health_change, fixed_stat_change, random_stat_types, special_rewards
+                        FROM action_places WHERE guild_id = ? AND category = ?
+                    """, (g_id, category_name)) as cur:
+                        actions = await cur.fetchall()
+
+                if not actions:
+                    await inter.response.send_message(f"📍 地點【{category_name}】目前暫未設定可執行的動作日程。", ephemeral=True)
+                    return
+
+                sub_view = discord.ui.View()
+                sub_view.add_item(ExecuteActionSelect(c_name, g_id, category_name, actions))
+                embed = discord.Embed(
+                    title=f"📍 日程日程清單 — 【{category_name}】",
+                    description=(
+                        f"當前藝人：**{c_name}**\n"
+                        f"• 行動點存量：`{ap} AP`\n"
+                        f"• 當前健康值：❤️ `{hp or 100} / 100`\n\n"
+                        f"請從下方選單選擇想執行的行程："
+                    ),
+                    color=0x3498DB
+                )
+                for act in actions[:8]:
+                    embed.add_field(
+                        name=f"⚡ {act[1]} (消耗 {act[3]} AP)",
+                        value=f"{act[2]}\n└ 效果: {act[7] or act[8] or '一般打工/消耗'}",
+                        inline=False
+                    )
+
+                await inter.response.send_message(embed=embed, view=sub_view, ephemeral=True)
+            return cb
+
+    embed = discord.Embed(
+        title="🏙️ 演藝日程與日常行動大廳",
+        description=(
+            f"藝人：**{c_name}** ｜ 當前擁有：`{ap} AP` ｜ 健康值：❤️ `{hp or 100}/100`\n\n"
+            f"請點選下方你想前往的地點專區進行打工、私教培訓、排練或休閒應酬："
+        ),
+        color=0x2C3E50
+    )
+    await interaction.response.send_message(embed=embed, view=PlaceCategoryView(), ephemeral=True)
 
 # -------------------- 清理與強制同步指令 --------------------
 @bot.command()
@@ -4827,6 +5241,7 @@ async def on_ready():
         print(f"❌ 指令同步失敗: {e}")
 
     print(f"系統核心已順利就緒：{bot.user}")
+    if not yearly_action_points_reset.is_running(): yearly_action_points_reset.start()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
