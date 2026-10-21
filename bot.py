@@ -2200,30 +2200,33 @@ class ProfileUpdateStepView(discord.ui.View):
             )
             new_val = discord.ui.TextInput(
                 label="修改後內容", 
-                placeholder="年資填純數字(如: 5)；色碼填 #FF69B4；CP填: 名字/關係"
+                placeholder="出道年資請填數字 (0 代表未出道)；色碼填 #FF69B4；CP填: 名字/關係"
             )
 
             async def on_submit(m_self, inter: discord.Interaction):
-                f_name = m_self.field_choice.value.strip().lower()
+                f_name = m_self.field_choice.value.strip()
                 val = m_self.new_val.value.strip()
 
                 async with aiosqlite.connect(DB_PATH) as db:
-                    # 抓取角色目前年齡，供計算入行年齡使用
-                    async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as cur:
-                        row = await cur.fetchone()
-                        cur_age = row[0] if row and row[0] else 22
-
-                    # 1. 出道年資判斷（擴大關鍵字命中）
-                    if any(k in f_name for k in ["年資", "出道", "年數", "資歷", "debut", "年份"]):
-                        # 擷取字串中所有數字
-                        m_num = re.search(r"\d+", val)
-                        if not m_num:
-                            await inter.response.send_message("❌ 請填寫有效的出道年數（例如直接填寫數字：`0` 代表未出道，`5` 代表 5 年）！", ephemeral=True)
+                    # 1. 出道年資判斷（支援各種寫法，全分類角色適用）
+                    if any(k in f_name for k in ["年資", "出道", "年數", "debut", "資歷"]):
+                        try:
+                            # 提取純數字
+                            match_num = re.search(r"\d+", val)
+                            if not match_num:
+                                raise ValueError
+                            years_val = int(match_num.group())
+                        except ValueError:
+                            await inter.response.send_message("❌ 出道年資請填寫純數字年份！（例如填 `5` 代表出道 5 年，填 `0` 代表未出道）", ephemeral=True)
                             return
-                        years_val = int(m_num.group(0))
-                        # 若有年資且入行年齡合理，自動反推入行歲數 (年齡 - 年資)，最低不小於 10 歲
-                        calc_debut_age = max(10, cur_age - years_val) if years_val > 0 else cur_age
-                        
+
+                        # 抓取角色當前年齡，自動回推進出道入行年齡
+                        async with db.execute("SELECT age FROM characters WHERE guild_id = ? AND name = ?", (self.guild_id, self.char_name)) as c_cur:
+                            c_row = await c_cur.fetchone()
+                            cur_age = c_row[0] if (c_row and c_row[0]) else 20
+
+                        calc_debut_age = max(1, cur_age - years_val) if years_val > 0 else cur_age
+
                         await db.execute("""
                             UPDATE characters 
                             SET debut_years = ?, debut_age = ?
@@ -2231,53 +2234,42 @@ class ProfileUpdateStepView(discord.ui.View):
                         """, (years_val, calc_debut_age, self.guild_id, self.char_name))
                         await db.commit()
 
-                        # 取得新稱謂預覽
-                        new_title = get_debut_title(years_val, calc_debut_age)
-                        await inter.response.send_message(
-                            f"✅ 【{self.char_name}】的 **出道年資** 已更新為：`{years_val} 年`！\n"
-                            f"🌟 獲得稱謂評定：【**{new_title}**】", 
-                            ephemeral=True
-                        )
+                        title_desc = get_debut_title(years_val, calc_debut_age)
+                        await inter.response.send_message(f"✅ 【{self.char_name}】的出道年資已成功更新為 **{years_val} 年**！\n🌟 當前星途稱號：**{title_desc}**", ephemeral=True)
                         return
 
                     # 2. 代表色判斷
                     elif any(k in f_name for k in ["代表色", "顏色", "色碼", "color"]):
                         await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                        display_f = "代表色碼"
-
-                    # 3. 職業與身分
+                    
+                    # 3. 職業/身分
                     elif any(k in f_name for k in ["職業", "身分", "job"]):
                         await db.execute("UPDATE characters SET job = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                        display_f = "職業身分"
-
-                    # 4. 特質標籤
+                    
+                    # 4. 感情狀態
+                    elif any(k in f_name for k in ["感情", "情史"]):
+                        await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    
+                    # 5. 特質標籤
                     elif any(k in f_name for k in ["標籤", "特質", "tags"]):
                         await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                        display_f = "特質標籤"
-
-                    # 5. 感情狀況
-                    elif any(k in f_name for k in ["感情", "戀愛", "婚姻"]):
-                        await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
-                        display_f = "感情狀況"
-
-                    # 6. CP 營業
-                    elif any(k in f_name for k in ["cp", "伴侶", "對象"]):
+                    
+                    # 6. CP 伴侶
+                    elif f_name.upper() == "CP" or "伴侶" in f_name:
                         cp_parts = re.split(r"[/,，\s]+", val)
                         cp_obj = {"target": cp_parts[0], "relation": cp_parts[1] if len(cp_parts) > 1 else "伴侶"}
                         await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.guild_id, self.char_name))
-                        display_f = "CP 關係"
-
+                    
                     else:
-                        await inter.response.send_message(
-                            "❌ 無法識別該欄位名稱！\n請填寫：**出道年資**、**代表色**、**職業**、**感情狀況** 或 **CP**。", 
-                            ephemeral=True
-                        )
+                        await inter.response.send_message("❌ 無法識別該欄位名稱！請填寫：`出道年資`、`代表色`、`職業`、`感情狀況` 或 `CP`。", ephemeral=True)
                         return
 
                     await db.commit()
-                await inter.response.send_message(f"✅ 【{self.char_name}】的 **{display_f}** 已更新為：`{val}`！", ephemeral=True)
+
+                await inter.response.send_message(f"✅ 【{self.char_name}】的 **{f_name}** 已更新為：`{val}`！", ephemeral=True)
 
         await interaction.response.send_modal(BaseModal())
+
 
 
     @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success)
