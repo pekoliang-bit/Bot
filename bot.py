@@ -1645,14 +1645,9 @@ class ProfileMainView(discord.ui.View):
         items = [f"• 對象：**{to_c}** ｜ 傾向：【{t}】 ｜ 羈絆：💖{aff} ｜ 狀況：`{desc}`" for to_c, t, aff, desc in rows]
         p_view = PagedDetailView(f"💬【{self.char_name}】的交際關係網絡", items, 0xE91E63)
         await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
-# -------------------- 指令：/查看 --------------------
-@bot.tree.command(name="查看", description="調閱個人角色、官方角色或大眾路人詳細檔案與資產面板")
-@app_commands.describe(名字="角色或 NPC 姓名")
-async def view_char_cmd(interaction: discord.Interaction, 名字: str):
+# -------------------- 通用角色卡片渲染函式 --------------------
+async def render_character_card(interaction: discord.Interaction, target_name: str, ephemeral: bool = True):
     g_id = interaction.guild_id
-    target_name = 名字.strip()
-    if not interaction.response.is_done():
-        await interaction.response.defer(ephemeral=False)
 
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
@@ -1665,7 +1660,10 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
             row = await cur.fetchone()
 
         if not row:
-            await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
             return
 
         (
@@ -1694,6 +1692,8 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
     elif is_npc_val == 3:
         tag_prefix = "［動態路人 NPC］"
         default_c = 0xE67E22
+    else:
+        tag_prefix = "［個人角色］"
 
     final_color = parse_hex_color(theme_color, default_color=default_c)
     h_display = f"{height} cm" if height else "未填寫"
@@ -1724,7 +1724,8 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
 
     asset_lines = [f"• [{a[0]}] {a[1]} (${a[2]:,})" for a in assets]
     if comps:
-        for c in comps: asset_lines.append(f"• [旗下公司] {c[0]} ({c[1]})")
+        for c in comps:
+            asset_lines.append(f"• [旗下公司] {c[0]} ({c[1]})")
     embed.add_field(name="🚗 產權與名下企業", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
 
     stats = json.loads(stats_json) if stats_json else {}
@@ -1734,7 +1735,56 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
     if img_url and img_url.startswith("http"):
         embed.set_thumbnail(url=img_url)
 
-    await interaction.followup.send(embed=embed, view=ProfileMainView(target_name, g_id))
+    view = ProfileMainView(target_name, g_id)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
+
+# -------------------- 指令：/查看 --------------------
+@bot.tree.command(name="查看", description="調閱自己持有的角色或自設 NPC 檔案面板（自動列出個人名下所有角色）")
+async def view_char_cmd(interaction: discord.Interaction):
+    g_id = interaction.guild_id
+    u_id = interaction.user.id
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 只撈取該使用者持有的「玩家角色(0)」與「自設NPC(2)」
+        async with db.execute("""
+            SELECT name, is_npc, job, rank FROM characters 
+            WHERE guild_id = ? AND user_id = ? AND is_npc IN (0, 2)
+            ORDER BY is_npc ASC, created_at ASC
+        """, (g_id, u_id)) as cur:
+            my_characters = await cur.fetchall()
+
+    if not my_characters:
+        await interaction.response.send_message("❌ 你在此伺服器尚未建立任何角色或自設 NPC！請先使用 `/檔案建立`。", ephemeral=True)
+        return
+
+    # 若名下只有 1 個角色，直接展示檔案
+    if len(my_characters) == 1:
+        await render_character_card(interaction, my_characters[0][0], ephemeral=False)
+        return
+
+    # 若有多個角色，彈出下拉選單讓玩家挑選
+    class MyCharSelect(discord.ui.Select):
+        def __init__(self):
+            opts = [
+                discord.SelectOption(
+                    label=c[0],
+                    description=f"[{'自設NPC' if c[1] == 2 else '玩家角色'}] {c[2]} ｜ 地位: 【{c[3]}】",
+                    emoji="🎭" if c[1] == 2 else "👤",
+                    value=c[0]
+                ) for c in my_characters[:25]
+            ]
+            super().__init__(placeholder="請選擇欲調閱的角色或自設 NPC 檔案...", options=opts)
+
+        async def callback(self, inter: discord.Interaction):
+            await render_character_card(inter, self.values[0], ephemeral=False)
+
+    view = discord.ui.View()
+    view.add_item(MyCharSelect())
+    await interaction.response.send_message("📋 偵測到你名下有多個角色檔案，請從下方選單選擇：", view=view, ephemeral=True)
+
 # -------------------- ProfileMainView 增加攻略劇本按鈕 --------------------
 # 請在 ProfileMainView 內加入以下按鈕（展示 NPC 專屬劇情名稱與解鎖條件）:
     @discord.ui.button(label="📖 專屬劇情", style=discord.ButtonStyle.success, row=1)
@@ -1756,39 +1806,88 @@ async def view_char_cmd(interaction: discord.Interaction, 名字: str):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # -------------------- 指令：/npc查看 --------------------
-@bot.tree.command(name="npc查看", description="查看已登記的官方 NPC 名冊大廳或個別檔案")
-@app_commands.describe(npc名稱="【選填】輸入特定官方 NPC 姓名，留空則開啟名錄大廳")
-async def view_npc_cmd(interaction: discord.Interaction, npc名稱: str = None):
-    g_id = interaction.guild_id
-    if npc名稱:
-        await view_char_cmd(interaction, npc名稱)
-        return
+class NPCLobbySelectView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
 
-    await interaction.response.defer(ephemeral=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name, age, gender, job, nationality, height FROM characters WHERE guild_id = ? AND is_npc = 1", (g_id,)) as cur:
-            all_npcs = await cur.fetchall()
+    @discord.ui.button(label="👑 官方 NPC", style=discord.ButtonStyle.primary)
+    async def official_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT name, age, gender, job, nationality FROM characters 
+                WHERE guild_id = ? AND is_npc = 1 ORDER BY name ASC
+            """, (self.guild_id,)) as cur:
+                npcs = await cur.fetchall()
 
-    if not all_npcs:
-        await interaction.followup.send("📋 目前尚未登記任何官方 NPC！", ephemeral=True)
-        return
+        if not npcs:
+            await interaction.response.send_message("📋 目前伺服器尚未登記任何【官方 NPC】！", ephemeral=True)
+            return
 
-    embed = discord.Embed(title="👥 官方 NPC 名錄大廳", description="請點選下方選單調閱各官方 NPC 個人詳細檔案：", color=0x9B59B6)
-    for npc in all_npcs[:15]:
-        h_str = f" ｜ {npc[5]}cm" if npc[5] else ""
-        embed.add_field(name=f"👑 {npc[0]} ({npc[1]}歲 / {npc[2]})", value=f"國籍：`{npc[4] or '本國'}`{h_str}\n身分：{npc[3]}", inline=True)
+        class OfficialSelect(discord.ui.Select):
+            def __init__(self):
+                opts = [
+                    discord.SelectOption(
+                        label=n[0],
+                        description=f"{n[1]}歲 / {n[2]} ｜ {n[4]} ｜ {n[3]}",
+                        emoji="👑",
+                        value=n[0]
+                    ) for n in npcs[:25]
+                ]
+                super().__init__(placeholder="請點選欲調閱的官方 NPC...", options=opts)
 
-    class NPCDropdown(discord.ui.Select):
-        def __init__(self):
-            opts = [discord.SelectOption(label=n[0], description=f"{n[1]}歲 ｜ {n[2]} ｜ {n[3]}", emoji="👑") for n in all_npcs[:25]]
-            super().__init__(placeholder="點此選擇欲調閱檔案的官方 NPC...", options=opts)
+            async def callback(self, inter: discord.Interaction):
+                await render_character_card(inter, self.values[0], ephemeral=False)
 
-        async def callback(self, inter: discord.Interaction):
-            await view_char_cmd(inter, self.values[0])
+        v = discord.ui.View()
+        v.add_item(OfficialSelect())
+        await interaction.response.send_message("👑 請從下方選單挑選欲查看的官方 NPC：", view=v, ephemeral=True)
 
-    view = discord.ui.View()
-    view.add_item(NPCDropdown())
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    @discord.ui.button(label="🎭 大眾路人", style=discord.ButtonStyle.secondary)
+    async def crowd_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT name, age, gender, job, nationality FROM characters 
+                WHERE guild_id = ? AND is_npc = 3 ORDER BY created_at DESC
+            """, (self.guild_id,)) as cur:
+                crowds = await cur.fetchall()
+
+        if not crowds:
+            await interaction.response.send_message("📋 目前伺服器尚未生成任何【大眾路人】！可使用 `/大眾路人大量發生中` 生成。", ephemeral=True)
+            return
+
+        class CrowdSelect(discord.ui.Select):
+            def __init__(self):
+                opts = [
+                    discord.SelectOption(
+                        label=c[0],
+                        description=f"{c[1]}歲 / {c[2]} ｜ {c[4]} ｜ {c[3]}",
+                        emoji="🎭",
+                        value=c[0]
+                    ) for c in crowds[:25]
+                ]
+                super().__init__(placeholder="請點選欲調閱的大眾路人檔案...", options=opts)
+
+            async def callback(self, inter: discord.Interaction):
+                await render_character_card(inter, self.values[0], ephemeral=False)
+
+        v = discord.ui.View()
+        v.add_item(CrowdSelect())
+        await interaction.response.send_message("🎭 請從下方選單挑選欲查看的大眾路人：", view=v, ephemeral=True)
+
+@bot.tree.command(name="npc查看", description="開啟 NPC 查閱大廳（按鈕切換官方 NPC 或大眾路人下拉選單）")
+async def view_npc_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="👥 NPC 檔案查閱大廳",
+        description=(
+            "請點選下方按鈕，系統將彈出對應的下拉選單供你選擇：\n\n"
+            "• 👑 **官方 NPC**：查看全域領袖、重要角色與具備攻略劇情的官方人物\n"
+            "• 🎭 **大眾路人**：查看在全城參與行情浮動與競爭的動態路人"
+        ),
+        color=0x34495E
+    )
+    await interaction.response.send_message(embed=embed, view=NPCLobbySelectView(interaction.guild_id), ephemeral=True)
+
 # -------------------- ProfileUpdateStepView --------------------
 class ProfileUpdateStepView(discord.ui.View):
     def __init__(self, char_name: str, guild_id: int, is_admin: bool):
