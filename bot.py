@@ -433,6 +433,41 @@ async def process_faction_tax(guild_id: int, char_name: str, work_title: str, re
             await db.commit()
             return f"\n🚩 陣營抽成：已自動向所屬【{f_name}】上繳 **${tax_amt:,}** 公款（稅率 {int(tax_rate*100)}%）。"
     return ""
+    def get_debut_title(debut_years: int, debut_age: int = None) -> str:
+    if not debut_years or debut_years <= 0:
+        return "新秀 / 未正式出道（接 1 個通告即可正式出道）"
+    
+    age_str = f"於 {debut_age} 歲入行" if debut_age else "已入行"
+    
+    if debut_years >= 80:
+        title = "不朽史詩先驅"
+    elif debut_years >= 70:
+        title = "世紀傳奇勳章"
+    elif debut_years >= 60:
+        title = "藝界活化石"
+    elif debut_years >= 50:
+        title = "星光長青碑"
+    elif debut_years >= 40:
+        title = "半世紀名伶"
+    elif debut_years >= 35:
+        title = "歲月巨擘"
+    elif debut_years >= 30:
+        title = "一代宗師"
+    elif debut_years >= 25:
+        title = "傳奇泰斗"
+    elif debut_years >= 20:
+        title = "殿堂名宿"
+    elif debut_years >= 15:
+        title = "實力資深"
+    elif debut_years >= 10:
+        title = "中流砥柱"
+    elif debut_years >= 5:
+        title = "初露鋒芒"
+    else:
+        title = "新星崛起"
+        
+    return f"{title} ｜ 出道 {debut_years} 年 ({age_str})"
+
 # -------------------- 第 7 段：資料庫完整初始化（完整 23 張獨立資料表） --------------------
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1827,7 +1862,25 @@ class ProfileMainView(discord.ui.View):
         items = [f"• 對象：**{to_c}** ｜ 傾向：【{t}】 ｜ 羈絆：💖{aff} ｜ 狀況：`{desc}`" for to_c, t, aff, desc in rows]
         p_view = PagedDetailView(f"💬【{self.char_name}】的交際關係網絡", items, 0xE91E63)
         await interaction.response.send_message(embed=p_view.get_embed(), view=p_view, ephemeral=True)
-# -------------------- 通用角色卡片渲染函式（按段落排版升級版） --------------------
+# -------------------- 角色卡片分頁 View --------------------
+class ProfileMainView(discord.ui.View):
+    def __init__(self, target_name: str, guild_id: int, embed_page1: discord.Embed, embed_page2: discord.Embed):
+        super().__init__(timeout=180)
+        self.target_name = target_name
+        self.guild_id = guild_id
+        self.embed_page1 = embed_page1
+        self.embed_page2 = embed_page2
+
+    @discord.ui.button(label="📑 第 1 頁：基本檔案", style=discord.ButtonStyle.primary, row=0)
+    async def go_page1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=self.embed_page1, view=self)
+
+    @discord.ui.button(label="📊 第 2 頁：演藝數值", style=discord.ButtonStyle.success, row=0)
+    async def go_page2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=self.embed_page2, view=self)
+
+
+# -------------------- 通用角色卡片渲染函式（分頁雙頁版） --------------------
 async def render_character_card(interaction: discord.Interaction, target_name: str, ephemeral: bool = True):
     g_id = interaction.guild_id
 
@@ -1842,10 +1895,11 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
             row = await cur.fetchone()
 
         if not row:
+            msg = f"❌ 查無檔案【{target_name}】！"
             if interaction.response.is_done():
-                await interaction.followup.send(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+                await interaction.followup.send(msg, ephemeral=True)
             else:
-                await interaction.response.send_message(f"❌ 查無檔案【{target_name}】！", ephemeral=True)
+                await interaction.response.send_message(msg, ephemeral=True)
             return
 
         (
@@ -1881,11 +1935,15 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
     h_display = f"{height} cm" if height else "未填寫"
     w_display = f"{weight} kg" if weight else "未填寫"
     nat_display = nationality if nationality else "本國"
-    debut_info = f"{debut_years} 年 (於 {debut_age} 歲入行)" if (debut_years and debut_years > 0) else "新秀 / 未正式出道"
     stage_str = f" / 藝名: {stage_name}" if stage_name and stage_name != target_name else ""
+    debut_info = get_debut_title(debut_years, debut_age)
 
-    embed = discord.Embed(title=f"🪪 {tag_prefix}【{target_name}】{stage_str} 個人資料面板", color=final_color)
-    embed.add_field(
+    # ==================== 第 1 頁：基本資訊與資產 ====================
+    embed1 = discord.Embed(
+        title=f"🪪 {tag_prefix}【{target_name}】{stage_str} 個人基本檔案 (1/2)",
+        color=final_color
+    )
+    embed1.add_field(
         name="基本身分與星途",
         value=(
             f"• 國籍/性別: `{nat_display}` / {gender} ({orientation or '保密'})\n"
@@ -1905,19 +1963,27 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
     cp_relation = cp_obj.get("relation", "伴侶")
     cp_text = f"💕 CP: **{cp_target}** ({cp_relation})" if cp_target else "無"
 
-    embed.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
-    embed.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 手頭現金: ${cash:,}\n• 銀行存款: ${bank:,}", inline=True)
+    embed1.add_field(name="情感狀態", value=f"• 感情: {rel_status}\n• {cp_text}", inline=True)
+    embed1.add_field(name="資產與地位", value=f"• 當前地位: **【{rank_name or '未定級'}】**\n• 手頭現金: ${cash:,}\n• 銀行存款: ${bank:,}", inline=True)
 
     asset_lines = [f"• [{a[0]}] {a[1]} (${a[2]:,})" for a in assets]
     if comps:
         for c in comps:
             asset_lines.append(f"• [旗下公司] {c[0]} ({c[1]})")
-    embed.add_field(name="🚗 產權與名下企業", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
+    embed1.add_field(name="🚗 產權與名下企業", value="\n".join(asset_lines) if asset_lines else "名下尚無固定資產", inline=False)
+    embed1.set_footer(text="點擊下方【第 2 頁：演藝數值】按鈕查看各項能力指標 ➔")
 
-    # ----------------- 數值排版重新架構 -----------------
+    if img_url and img_url.startswith("http"):
+        embed1.set_thumbnail(url=img_url)
+
+    # ==================== 第 2 頁：商業名氣、藝能數值與粉絲 ====================
+    embed2 = discord.Embed(
+        title=f"📊 {tag_prefix}【{target_name}】{stage_str} 演藝能力面板 (2/2)",
+        color=final_color
+    )
     stats = json.loads(stats_json) if stats_json else {}
 
-    # 1. 商業名氣（直向條列）
+    # 1. 商業名氣
     commercial_lines = [
         f"• 流量熱度：**{stats.get('流量熱度', 0):,}**",
         f"• 商業價值：**{stats.get('商業價值', 0):,}**",
@@ -1925,14 +1991,12 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
         f"• 路人緣：**{stats.get('路人緣', 0):,}**",
         f"• 公關：**{stats.get('公關', 0):,}**"
     ]
-    embed.add_field(name="📈 商業名氣", value="\n".join(commercial_lines), inline=True)
+    embed2.add_field(name="📈 商業名氣", value="\n".join(commercial_lines), inline=False)
 
-    # 2. 藝能實力（主攻賽道置頂，其餘四賽道依次接續）
+    # 2. 藝能實力
     all_tracks = ["歌唱", "唱跳", "主持", "綜藝", "演繹"]
     main_track = primary_track if primary_track in all_tracks else "演繹"
     other_tracks = [t for t in all_tracks if t != main_track]
-
-    # 其餘四個賽道數值格式化排版
     other_tracks_str = " ｜ ".join([f"{t}: **{stats.get(t, 0)}**" for t in other_tracks])
 
     art_lines = [
@@ -1942,9 +2006,9 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
         f"  └ 其他賽道：{other_tracks_str}",
         f"• 個人才藝：**{stats.get('個人才藝', 0)}**"
     ]
-    embed.add_field(name="🎭 藝能實力", value="\n".join(art_lines), inline=False)
+    embed2.add_field(name="🎭 藝能實力", value="\n".join(art_lines), inline=False)
 
-    # 3. 系統動態追蹤與 CP 好感度
+    # 3. 社群動態與 CP
     cp_score_display = f"{cp_target}（{cp_obj.get('affection', 100)} 分 營業中）" if cp_target else "無"
     dynamic_lines = [
         f"• 死忠粉絲數：**{stats.get('死忠粉絲數', 0):,}** 人",
@@ -1952,9 +2016,8 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
         f"• 大眾認知度：**{stats.get('大眾認知度', 0):,}**",
         f"• CP好感度：{cp_score_display}"
     ]
-    embed.add_field(name="📊 動態追蹤與社群指標", value="\n".join(dynamic_lines), inline=False)
+    embed2.add_field(name="📊 動態追蹤與社群指標", value="\n".join(dynamic_lines), inline=False)
 
-    # 其餘自訂或自建類型公開數值補充（若有）
     custom_type_keys = [k for k in stats.keys() if k not in (
         ["流量熱度", "商業價值", "影響指數", "路人緣", "公關", "容貌", "才智", "個人才藝",
          "死忠粉絲數", "活躍黑粉數", "大眾認知度"] + all_tracks
@@ -1962,17 +2025,16 @@ async def render_character_card(interaction: discord.Interaction, target_name: s
 
     if custom_type_keys:
         custom_lines = [f"• {k}：**{stats[k]}**" for k in custom_type_keys]
-        embed.add_field(name="✨ 其他特別數值", value="\n".join(custom_lines), inline=False)
+        embed2.add_field(name="✨ 其他特別數值", value="\n".join(custom_lines), inline=False)
 
     if img_url and img_url.startswith("http"):
-        embed.set_thumbnail(url=img_url)
+        embed2.set_thumbnail(url=img_url)
 
-    view = ProfileMainView(target_name, g_id)
+    view = ProfileMainView(target_name, g_id, embed1, embed2)
     if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+        await interaction.followup.send(embed=embed1, view=view, ephemeral=ephemeral)
     else:
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
-
+        await interaction.response.send_message(embed=embed1, view=view, ephemeral=ephemeral)
 
 # -------------------- 指令：/查看 --------------------
 @bot.tree.command(name="查看", description="調閱自己持有的角色或自設 NPC 檔案面板（自動列出個人名下所有角色）")
@@ -2132,8 +2194,14 @@ class ProfileUpdateStepView(discord.ui.View):
     @discord.ui.button(label="📝 個資更新", style=discord.ButtonStyle.primary)
     async def update_base(self, interaction: discord.Interaction, button: discord.ui.Button):
         class BaseModal(discord.ui.Modal, title=f"更新【{self.char_name}】個人資料"):
-            field_choice = discord.ui.TextInput(label="欲修改欄位 (職業/感情狀況/CP)", placeholder="例如: 感情狀況 或 CP")
-            new_val = discord.ui.TextInput(label="修改後內容", placeholder="填入新資料，若為CP請填: 名字/關係")
+            field_choice = discord.ui.TextInput(
+                label="欲修改欄位 (職業/感情狀況/CP/代表色/出道年資)", 
+                placeholder="例如: 出道年資、代表色、感情狀況、職業 或 CP"
+            )
+            new_val = discord.ui.TextInput(
+                label="修改後內容", 
+                placeholder="出道年資請填數字(如: 5)；色碼填 #FF69B4；CP填: 名字/關係"
+            )
 
             async def on_submit(m_self, inter: discord.Interaction):
                 f_name = m_self.field_choice.value.strip()
@@ -2145,17 +2213,27 @@ class ProfileUpdateStepView(discord.ui.View):
                         await db.execute("UPDATE characters SET tags = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
                     elif f_name in ["感情狀況", "感情"]:
                         await db.execute("UPDATE characters SET relationship_status = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    elif f_name in ["代表色", "顏色", "色碼", "theme_color"]:
+                        await db.execute("UPDATE characters SET theme_color = ? WHERE guild_id = ? AND name = ?", (val, self.guild_id, self.char_name))
+                    elif f_name in ["出道年資", "年資", "出道年數", "出道年份"]:
+                        try:
+                            years_val = max(0, int(val))
+                        except ValueError:
+                            await inter.response.send_message("❌ 出道年資請輸入純整數年份（如: 0 代表未出道，5 代表已出道 5 年）！", ephemeral=True)
+                            return
+                        await db.execute("UPDATE characters SET debut_years = ? WHERE guild_id = ? AND name = ?", (years_val, self.guild_id, self.char_name))
                     elif f_name in ["CP", "cp"]:
                         cp_parts = re.split(r"[/,，\s]+", val)
                         cp_obj = {"target": cp_parts[0], "relation": cp_parts[1] if len(cp_parts) > 1 else "伴侶"}
                         await db.execute("UPDATE characters SET cp_info = ? WHERE guild_id = ? AND name = ?", (json.dumps(cp_obj, ensure_ascii=False), self.guild_id, self.char_name))
                     else:
-                        await inter.response.send_message("❌ 無法識別該欄位名稱！", ephemeral=True)
+                        await inter.response.send_message("❌ 無法識別該欄位名稱！請填寫：職業、感情狀況、代表色、出道年資 或 CP。", ephemeral=True)
                         return
                     await db.commit()
                 await inter.response.send_message(f"✅ 【{self.char_name}】的 **{f_name}** 已更新為：`{val}`！", ephemeral=True)
 
         await interaction.response.send_modal(BaseModal())
+
 
     @discord.ui.button(label="🏆 成就更新", style=discord.ButtonStyle.success)
     async def update_achievement(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -3590,6 +3668,131 @@ async def view_quests(interaction: discord.Interaction, 角色名: str):
         embed.add_field(name=f"📌 {cat}欄", value="\n".join(lines), inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+# -------------------- 指令：/回報任務（含未出道新人正式出道機制） --------------------
+@bot.tree.command(name="回報任務", description="回報已完成的通告、活動或日常任務，結算酬勞、數值並檢驗出道與晉級")
+@app_commands.describe(
+    角色名="欲領取通告任務獎勵的角色名稱",
+    任務名稱="已接取或完成的任務/通告名稱",
+    證明內容="文字結算、對戲討論串連結或工作截圖說明"
+)
+async def report_mission(
+    interaction: discord.Interaction,
+    角色名: str,
+    任務名稱: str,
+    證明內容: str = "已按要求完成演藝通告"
+):
+    g_id = interaction.guild_id
+    c_name = 角色名.strip()
+    m_name = 任務名稱.strip()
+    await interaction.response.defer(ephemeral=False)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 抓取角色基本資料
+        async with db.execute("""
+            SELECT user_id, age, debut_years, debut_age, cash, bank, stats, faction
+            FROM characters WHERE guild_id = ? AND name = ?
+        """, (g_id, c_name)) as cur:
+            char_row = await cur.fetchone()
+
+        if not char_row:
+            await interaction.followup.send(f"❌ 查無角色【{c_name}】！", ephemeral=True)
+            return
+
+        u_id, cur_age, d_years, d_age, cash, bank, stats_json, faction_name = char_row
+
+        # 權限檢查：只有角色持有者或管理員可回報
+        if u_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
+            await interaction.followup.send("❌ 你只能為自己的角色回報通告任務！", ephemeral=True)
+            return
+
+        # 2. 抓取任務設定
+        async with db.execute("""
+            SELECT id, reward_money, stat_bonus, item_reward, title_reward, description
+            FROM missions WHERE guild_id = ? AND name = ?
+        """, (g_id, m_name)) as m_cur:
+            mission_row = await m_cur.fetchone()
+
+        # 若系統任務表未預先建立該通告，預設基礎日常通告報酬
+        if mission_row:
+            m_id, rew_money, stat_bonus, item_reward, title_reward, m_desc = mission_row
+        else:
+            rew_money = 5000
+            stat_bonus = "影響指數+10 流量熱度+15"
+            item_reward = ""
+            title_reward = ""
+            m_desc = "演藝日常通告通算"
+
+        stats = json.loads(stats_json) if stats_json else {}
+
+        # 3. 陣營公款抽稅結算
+        tax_deducted = 0
+        faction_note = ""
+        if faction_name and faction_name not in ["無", "官方勢力"]:
+            async with db.execute("SELECT tax_rate FROM factions WHERE guild_id = ? AND name = ?", (g_id, faction_name)) as f_cur:
+                f_row = await f_cur.fetchone()
+                tax_rate = f_row[0] if (f_row and f_row[0]) else 10 # 預設 10%
+                tax_deducted = int(rew_money * (tax_rate / 100))
+                player_gain_money = rew_money - tax_deducted
+                await db.execute("UPDATE factions SET treasury = treasury + ? WHERE guild_id = ? AND name = ?", (tax_deducted, g_id, faction_name))
+                faction_note = f"\n🏛️ 陣營【{faction_name}】抽稅 ({tax_rate}%): `${tax_deducted:,}`（已納入陣營公款）"
+        else:
+            player_gain_money = rew_money
+
+        # 4. 數值成長發放
+        gained_stats_list = []
+        if stat_bonus:
+            for part in re.split(r"[,，、\s]+", stat_bonus):
+                match = re.search(r"([^\d+-]+)([+-]?\d+)", part)
+                if match:
+                    k, v = match.group(1).strip(), int(match.group(2))
+                    stats[k] = max(0, stats.get(k, 0) + v)
+                    sign = "+" if v >= 0 else ""
+                    gained_stats_list.append(f"{k} {sign}{v}")
+
+        # 5. 道具發放
+        item_note = ""
+        if item_reward:
+            async with db.execute("SELECT id FROM inventory WHERE guild_id = ? AND owner_name = ? AND item_name = ?", (g_id, c_name, item_reward)) as inv_cur:
+                exists_item = await inv_cur.fetchone()
+                if exists_item:
+                    await db.execute("UPDATE inventory SET amount = amount + 1 WHERE id = ?", (exists_item[0],))
+                else:
+                    await db.execute("INSERT INTO inventory (guild_id, owner_name, item_name, amount, giver) VALUES (?, ?, ?, 1, '任務通告報酬')", (g_id, c_name, item_reward))
+            item_note = f"\n📦 獲得道具報酬：`{item_reward} ×1`"
+
+        # 6. 未出道新人「接下通告正式出道」機制
+        debut_announcement = ""
+        if not d_years or d_years <= 0:
+            debut_age_val = cur_age if cur_age else 18
+            await db.execute("""
+                UPDATE characters
+                SET debut_years = 1, debut_age = ?
+                WHERE guild_id = ? AND name = ?
+            """, (debut_age_val, g_id, c_name))
+            debut_announcement = f"\n\n🌟 **【演藝圈出道公告】**\n恭喜 **{c_name}** 順利完成人生首個通告，正式宣告出道！獲得稱號【**新星崛起**】（於 {debut_age_val} 歲入行）！"
+
+        # 7. 更新金錢與屬性
+        await db.execute("""
+            UPDATE characters
+            SET cash = cash + ?, stats = ?
+            WHERE guild_id = ? AND name = ?
+        """, (player_gain_money, json.dumps(stats, ensure_ascii=False), g_id, c_name))
+        await db.commit()
+
+    # 8. 地位自動檢驗與晉升
+    await check_and_update_rank(g_id, c_name, interaction.channel)
+
+    # 9. 結算嵌入面板
+    embed = discord.Embed(title=f"🎬 通告回報結算：【{c_name}】", color=0x2ECC71)
+    embed.description = (
+        f"**完成任務**：【{m_name}】\n"
+        f"**成果證明**：`{證明內容.strip()}`\n\n"
+        f"💰 **酬勞入帳**：**+${player_gain_money:,}** (實領){faction_note}{item_note}\n"
+        f"📈 **數值成長**：{', '.join(gained_stats_list) if gained_stats_list else '經驗累積'}"
+        f"{debut_announcement}"
+    )
+    await interaction.followup.send(embed=embed)
+
 # -------------------- 指令：/陣營 --------------------
 @bot.tree.command(name="陣營", description="陣營主控台：捐獻、查看金庫排名、購買商城全體加成或退出")
 @app_commands.choices(操作=[
