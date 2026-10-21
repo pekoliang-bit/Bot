@@ -1719,60 +1719,60 @@ async def audit_pass_cmd(
                 ))
                 await db.commit()
 
-            owner_mention = f"<@{assigned_uid}>" if assigned_uid > 0 else ""
-            embed = discord.Embed(
-                title=f"🎉【{c_name}】終審通過，正式入籍！",
-                description=(
-                    f"受審角色：**{c_name}**（藝名：{parsed.get('stage_name', '無')}）\n"
-                    f"審核類別：**【{類別.name}】** ｜ 終審管理員：{interaction.user.mention}\n\n"
-                    f"📋 **已登記入籍建檔：**\n"
-                    f"• 歸屬：`{parsed.get('affiliation_type', '單打獨鬥')}`（{parsed.get('affiliation_name', '無')}）\n"
-                    f"• 主攻賽道：【**{parsed.get('primary_track', '演繹')}**】\n"
-                    f"• 身材：`{h} cm` / `{w} kg` (BMI: `{bmi_val}`)\n"
-                    f"• 初始健康值：❤️ **{f_health} / 100**\n\n"
-                    f"💰 **核算資產入帳：**\n"
-                    f"• 零用金（現金）：**$10,000**\n"
-                    f"• 人設評級核發金（已入銀行）：**${total_initial_cash:,}**"
-                ),
-                color=0x2ECC71
-            )
-            if warn_bmi:
-                embed.add_field(name="⚠️ 身材指數提醒", value=warn_bmi, inline=False)
+                owner_mention = f"<@{assigned_uid}>" if assigned_uid > 0 else ""
+                embed = discord.Embed(
+                    title=f"🎉【{c_name}】終審通過，正式入籍！",
+                    description=(
+                        f"受審角色：**{c_name}**（藝名：{parsed.get('stage_name', '無')}）\n"
+                        f"審核類別：**【{類別.name}】** ｜ 終審管理員：{interaction.user.mention}\n\n"
+                        f"📋 **已登記入籍建檔：**\n"
+                        f"• 歸屬：`{parsed.get('affiliation_type', '單打獨鬥')}`（{parsed.get('affiliation_name', '無')}）\n"
+                        f"• 主攻賽道：【**{parsed.get('primary_track', '演繹')}**】\n"
+                        f"• 身材：`{h} cm` / `{w} kg` (BMI: `{bmi_val}`)\n"
+                        f"• 初始健康值：❤️ **{f_health} / 100**\n\n"
+                        f"💰 **核算資產入帳：**\n"
+                        f"• 零用金（現金）：**$10,000**\n"
+                        f"• 人設評級核發金（已入銀行）：**${total_initial_cash:,}**"
+                    ),
+                    color=0x2ECC71
+                )
+                if warn_bmi:
+                    embed.add_field(name="⚠️ 身材指數提醒", value=warn_bmi, inline=False)
 
-            calc_text = (
-                f"```yaml\n"
-                f"【初始金錢結算清單】\n"
-                f"・流量熱度：({v_hot}) × 80 ＝ ${m_hot:,}\n"
-                f"・商業價值：({v_comm}) × 100 ＝ ${m_comm:,}\n"
-                f"・路人緣：({v_passer}) × 30 ＝ ${m_passer:,}\n"
-                f"・公關：({v_pr}) × 20 ＝ ${m_pr:,}\n"
-                f"・影響指數：({v_infl}) × 50 ＝ ${m_infl:,}\n"
-                f"・容貌：({v_face}) × 40 ＝ ${m_face:,}\n"
-                f"・才智：({v_iq}) × 20 ＝ ${m_iq:,}\n"
-                f"・賽道總合：[{v_dance}+{v_act}+{v_host}+{v_sing}+{v_var}] × 30 ＝ ${m_tracks:,}\n"
-                f"・個人才藝：({v_art}) × 40 ＝ ${m_art:,}\n"
-                f"-----------------------------------------------\n"
-                f"＝ 初始金幣合計：${total_initial_cash:,}\n"
-                f"```"
-            )
+                calc_text = (
+                    f"```yaml\n"
+                    f"【初始金錢結算清單】\n"
+                    f"・流量熱度：({v_hot}) × 80 ＝ ${m_hot:,}\n"
+                    f"・商業價值：({v_comm}) × 100 ＝ ${m_comm:,}\n"
+                    f"・路人緣：({v_passer}) × 30 ＝ ${m_passer:,}\n"
+                    f"・公關：({v_pr}) × 20 ＝ ${m_pr:,}\n"
+                    f"・影響指數：({v_infl}) × 50 ＝ ${m_infl:,}\n"
+                    f"・容貌：({v_face}) × 40 ＝ ${m_face:,}\n"
+                    f"・才智：({v_iq}) × 20 ＝ ${m_iq:,}\n"
+                    f"・賽道總合：[{v_dance}+{v_act}+{v_host}+{v_sing}+{v_var}] × 30 ＝ ${m_tracks:,}\n"
+                    f"・個人才藝：({v_art}) × 40 ＝ ${m_art:,}\n"
+                    f"-----------------------------------------------\n"
+                    f"＝ 初始金幣合計：${total_initial_cash:,}\n"
+                    f"```"
+                )
 
-            if not 隱藏算式明細:
-                embed.add_field(name="📊 初始金幣審核結算清單", value=calc_text, inline=False)
-                await interaction.followup.send(content=owner_mention, embed=embed)
+                if not 隱藏算式明細:
+                    embed.add_field(name="📊 初始金幣審核結算清單", value=calc_text, inline=False)
+                    await interaction.followup.send(content=owner_mention, embed=embed)
+                else:
+                    await interaction.followup.send(content=owner_mention, embed=embed)
+                    try:
+                        await interaction.user.send(f"📋 **【管理員審核後台算式存根 — {c_name}】**\n{calc_text}")
+                    except Exception:
+                        pass
+                return
             else:
-                await interaction.followup.send(content=owner_mention, embed=embed)
-                try:
-                    await interaction.user.send(f"📋 **【管理員審核後台算式存根 — {c_name}】**\n{calc_text}")
-                except Exception:
-                    pass
-            return
-        else:
-            await interaction.followup.send(f"⚠️ 角色【{c_name}】早已通過雙重審核並已入籍！", ephemeral=True)
+                await interaction.followup.send(f"⚠️ 角色【{c_name}】早已通過雙重審核並已入籍！", ephemeral=True)
+                return
+
     except Exception as e:
         traceback.print_exc()
         await interaction.followup.send(f"❌ 審核執行發生錯誤：`{e}`", ephemeral=True)
-
-
 
 # -------------------- 角色檔案按鈕組：ProfileMainView --------------------
 class ProfileMainView(discord.ui.View):
