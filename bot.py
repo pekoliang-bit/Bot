@@ -2420,6 +2420,162 @@ async def sync(ctx):
         await msg.edit(content=f"✅ 強制同步完成！已載入 **{len(synced)}** 個指令。")
     except Exception as e:
         await msg.edit(content=f"❌ 同步失敗: `{e}`")
+# -------------------- 系統背景定時排程引擎 --------------------
+@tasks.loop(hours=24)
+async def daily_interest():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters") as cur:
+            guild_rows = await cur.fetchall()
+
+        for (g_id,) in guild_rows:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'interest_rate'", (g_id,)) as cur:
+                row = await cur.fetchone()
+                rate = float(row[0]) if row else 0.05
+
+            await db.execute(f"UPDATE characters SET bank = CAST(bank * (1 + {rate}) AS INTEGER) WHERE guild_id = ? AND bank > 0", (g_id,))
+        await db.commit()
+
+@tasks.loop(hours=1)
+async def check_ticket_expiration():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, char_name, user_id, guild_id, role_id, ticket_name FROM active_tickets WHERE expire_time <= ?", (now,)) as cur:
+            expired = await cur.fetchall()
+
+        for record in expired:
+            rec_id, c_name, u_id, g_id, r_id, t_name = record
+            guild = bot.get_guild(g_id)
+            if guild:
+                member = guild.get_member(u_id)
+                role = guild.get_role(r_id)
+                if member and role:
+                    try:
+                        await member.remove_roles(role, reason="門票逾期未歸，強制收回")
+                    except Exception:
+                        pass
+
+            ban_until = now + (300 * 3600)
+            await db.execute("UPDATE characters SET ticket_ban_until = ? WHERE guild_id = ? AND name = ?", (ban_until, g_id, c_name))
+            await db.execute("DELETE FROM active_tickets WHERE id = ?", (rec_id,))
+
+        await db.commit()
+
+@tasks.loop(hours=24)
+async def monthly_age_up():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters") as g_cur:
+            guilds = await g_cur.fetchall()
+
+        for (g_id,) in guilds:
+            async with db.execute("SELECT value FROM system_settings WHERE guild_id = ? AND key = 'days_per_game_year'", (g_id,)) as s_cur:
+                s_row = await s_cur.fetchone()
+                days_per_year = int(s_row[0]) if s_row else 30
+
+            cycle_seconds = days_per_year * 86400
+
+            async with db.execute("SELECT name, age, created_at FROM characters WHERE guild_id = ?", (g_id,)) as cur:
+                rows = await cur.fetchall()
+                for name, age, created_at in rows:
+                    years_passed = int((now - created_at) // cycle_seconds)
+                    if years_passed > 0:
+                        await db.execute("""
+                            UPDATE characters 
+                            SET age = age + ?, created_at = created_at + ? 
+                            WHERE guild_id = ? AND name = ?
+                        """, (years_passed, years_passed * cycle_seconds, g_id, name))
+
+        await db.commit()
+
+@tasks.loop(hours=48)
+async def crowd_npc_fluctuation_task():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT guild_id FROM characters WHERE is_npc = 3") as cur:
+            guild_rows = await cur.fetchall()
+
+        for (g_id,) in guild_rows:
+            async with db.execute("SELECT key, value FROM system_settings WHERE guild_id = ?", (g_id,)) as cur:
+                settings = dict(await cur.fetchall())
+
+            rate = float(settings.get("npc_fluct_rate", "0.05"))
+            include_money = settings.get("npc_fluct_money", "1") == "1"
+            max_cap = int(settings.get("npc_fluct_cap", "3000"))
+
+            async with db.execute("SELECT name, cash, bank, stats FROM characters WHERE guild_id = ? AND is_npc = 3", (g_id,)) as c_cur:
+                npcs = await c_cur.fetchall()
+
+            for n_name, cash, bank, stats_json in npcs:
+                stats = json.loads(stats_json) if stats_json else {}
+                for k in stats.keys():
+                    delta_pct = random.uniform(-rate, rate)
+                    stats[k] = max(10, min(max_cap, int(stats[k] * (1 + delta_pct))))
+
+                new_cash, new_bank = cash, bank
+                if include_money:
+                    m_rate = random.uniform(-0.06, 0.06)
+                    new_cash = max(100, int(cash * (1 + m_rate)))
+                    new_bank = max(500, int(bank * (1 + m_rate)))
+
+                await db.execute("""
+                    UPDATE characters SET stats = ?, cash = ?, bank = ? WHERE guild_id = ? AND name = ?
+                """, (json.dumps(stats, ensure_ascii=False), new_cash, new_bank, g_id, n_name))
+
+        await db.commit()
+
+@tasks.loop(hours=24)
+async def daily_pet_routine():
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE character_pets SET health = MAX(0, health - 5) WHERE is_dead = 0")
+        async with db.execute("SELECT id, guild_id, owner_name, pet_name, pet_type FROM character_pets WHERE is_dead = 0 AND death_time <= ?", (now,)) as cur:
+            dead_pets = await cur.fetchall()
+
+        for pet_id, g_id, owner, p_name, p_type in dead_pets:
+            await db.execute("UPDATE character_pets SET is_dead = 1 WHERE id = ?", (pet_id,))
+            async with db.execute("SELECT user_id FROM characters WHERE guild_id = ? AND name = ?", (g_id, owner)) as u_cur:
+                u_row = await u_cur.fetchone()
+                if u_row:
+                    user = bot.get_user(u_row[0])
+                    if user:
+                        try:
+                            await user.send(f"🕊️ **【陪伴告別通知】**\n角色【{owner}】的夥伴 **{p_name}** ({p_type}) 壽命已盡。可撰寫悼念貼文並使用 `/喪禮結算`。")
+                        except Exception:
+                            pass
+        await db.commit()
+
+@tasks.loop(hours=168)
+async def weekly_fans_and_haters_settlement():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT guild_id, user_id, name, bank, stats, is_npc FROM characters") as cur:
+            all_chars = await cur.fetchall()
+
+        for g_id, u_id, c_name, bank, stats_json, is_npc in all_chars:
+            stats = json.loads(stats_json) if stats_json else {}
+            diehard_fans = stats.get("死忠粉絲數", 0)
+            haters = stats.get("活躍黑粉數", 0)
+
+            payout = diehard_fans * 10
+            new_bank = bank + payout
+
+            hater_loss = haters // 1000
+            current_passerby = stats.get("路人緣", 0)
+            loss_applied = 0
+            if hater_loss > 0 and current_passerby > 0:
+                loss_applied = min(current_passerby, hater_loss)
+                stats["路人緣"] = current_passerby - loss_applied
+
+            await db.execute("""
+                UPDATE characters SET bank = ?, stats = ? WHERE guild_id = ? AND name = ?
+            """, (new_bank, json.dumps(stats, ensure_ascii=False), g_id, c_name))
+        await db.commit()
+
+@tasks.loop(hours=720) # 30 天循環一次
+async def yearly_action_points_reset():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE characters SET action_points = 0 WHERE action_points > 0")
+        await db.commit()
+    print("🔄【年度清算】全服藝人/角色未使用的日常行動點已全額清零重置！")
+
 # -------------------- 資料庫完整初始化（包含所有資料表） --------------------
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
