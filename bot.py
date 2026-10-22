@@ -5940,6 +5940,149 @@ async def transfer_money_cmd(
 @app_commands.describe(角色名="回報任務的角色全名", 任務名稱="任務完整名稱")
 async def report_quest_alias_cmd(interaction: discord.Interaction, 角色名: str, 任務名稱: str):
     await report_quest_cmd(interaction, 角色名, 任務名稱)
+# -------------------- 指令：/檔案建立 --------------------
+@bot.tree.command(name="檔案建立", description="建立玩家個人角色或名下原創角色（支援自訂身材、藝名、賽道與屬性）")
+@app_commands.choices(身分別=[
+    app_commands.Choice(name="👤 玩家正式角色 (親自扮演)", value="player"),
+    app_commands.Choice(name="🎨 原創角色 OC (名下創作人物)", value="original")
+])
+@app_commands.describe(
+    角色全名="角色的正式姓名 (例如: 謝雲流、陸昭雪)",
+    性別="角色的生理或心理性別 (例如: 男、女、非二元)",
+    年齡="角色的生理年齡 (純整數，例如: 21)",
+    國籍="出身背景或地域 (例如: 華夏、天海聯邦、星羅國度)",
+    職業身分="當前從事之職業或身分 (例如: 練習生、獨立唱作人、青年演員)",
+    身分別="選擇為本人扮演或名下原創角色",
+    藝名或道號="選填：演藝藝名、稱號或江湖道號 (預設為本名)",
+    身高cm="身高公分數 (純整數，例如: 178)",
+    體重kg="體重公斤數 (純整數，例如: 65)",
+    主攻賽道="選填：主攻專業 (例如: 唱跳、演繹、主持、歌唱、綜藝)",
+    代表色碼="選填：個人面板 16 進位色碼 (例如: #FF69B4 或 0x3498DB)",
+    立繪網址="選填：頭像或全身立繪圖片直鏈 (http/https 開頭網址)",
+    特質標籤="選填：特質標籤，多個用空格或頓號隔開 (自動執行互斥檢驗)",
+    初始第一能力組="選填：格式為 [流量熱度:50 商業價值:30 路人緣:60]，留空給予預設",
+    初始第二能力組="選填：格式為 [唱跳:40 演繹:70 容貌:85 才智:65]，留空給予預設"
+)
+async def create_profile_cmd(
+    interaction: discord.Interaction,
+    角色全名: str,
+    性別: str,
+    年齡: int,
+    國籍: str,
+    職業身分: str,
+    身分別: app_commands.Choice[str],
+    藝名或道號: str = None,
+    身高cm: int = 175,
+    體重kg: int = 60,
+    主攻賽道: str = "演繹",
+    代表色碼: str = "#3498DB",
+    立繪網址: str = None,
+    特質標籤: str = "",
+    初始第一能力組: str = "",
+    初始第二能力組: str = ""
+):
+    g_id = interaction.guild_id
+    u_id = interaction.user.id
+    c_name = 角色全名.strip()
+    is_oc = (身分別.value == "original")
+    npc_code = 2 if is_oc else 0  # 2: 原創OC, 0: 玩家本人角色
+
+    if 年齡 < 1:
+        await interaction.response.send_message("❌ 年齡必須大於 0 歲！", ephemeral=True)
+        return
+
+    # 1. 檢驗角色重名
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as cur:
+            if await cur.fetchone():
+                await interaction.response.send_message(f"❌ 角色名稱【{c_name}】已被佔用，請更換姓名！", ephemeral=True)
+                return
+
+    # 2. 體態換算與 BMI 判定
+    h_m = max(50, 身高cm) / 100.0
+    w_k = max(20, 體重kg)
+    initial_bmi = round(w_k / (h_m * h_m), 1)
+
+    # 體態容貌與健康度演算法
+    base_health = 100
+    base_face = 70
+    if 18.5 <= initial_bmi <= 24.0:
+        base_face += 10
+    elif initial_bmi > 28.0 or initial_bmi < 16.5:
+        base_health -= 15
+        base_face -= 10
+
+    # 3. 特質標籤處理與互斥衝突組檢驗
+    raw_tags = [t.strip() for t in re.split(r"[,，、\s]+", 特質標籤.strip()) if t.strip()]
+    valid_tags = []
+    for t in raw_tags:
+        valid_tags = resolve_tag_conflicts(valid_tags, t)
+
+    # 4. 解析兩大組屬性數值
+    stats_dict = {
+        "流量熱度": 50, "商業價值": 30, "路人緣": 50, "公關": 30, "影響指數": 20,
+        "唱跳": 30, "演繹": 50, "主持": 20, "歌唱": 30, "綜藝": 30,
+        "容貌": base_face, "才智": 60, "個人才藝": 40,
+        "死忠粉絲數": 0, "活躍黑粉數": 0
+    }
+
+    def parse_custom_stats(raw_str: str):
+        if not raw_str: return
+        # 支援 屬性:50 或 屬性+50 或 屬性50
+        for token in re.split(r"[,，、\s]+", raw_str.strip()):
+            m = re.search(r"([^\d:：+-]+)[:：=]?([+-]?\d+)", token)
+            if m:
+                k = m.group(1).strip()
+                v = int(m.group(2))
+                stats_dict[k] = max(0, v)
+
+    parse_custom_stats(初始第一能力組)
+    parse_custom_stats(初始第二能力組)
+
+    stage_n = 藝名或道號.strip() if 藝名或道號 else c_name
+    img_url = 立繪網址.strip() if (立繪網址 and 立繪網址.strip().startswith("http")) else None
+
+    # 5. 寫入資料庫
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO characters (
+                guild_id, user_id, name, stage_name, gender, age, nationality, job,
+                height, weight, char_health, main_track, theme_color, image_url,
+                tags, stats, works, affiliation_type, affiliation_name, faction,
+                debut_years, debut_age, cash, bank, is_npc, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '單打獨鬥', '無', '無', 0, 0, 5000, 10000, ?, ?)
+        """, (
+            g_id, u_id, c_name, stage_n, 性別.strip(), 年齡, 國籍.strip(), 職業身分.strip(),
+            身高cm, 體重kg, base_health, 主攻賽道.strip(), 代表色碼.strip(), img_url,
+            "、".join(valid_tags), json.dumps(stats_dict, ensure_ascii=False), npc_code, time.time()
+        ))
+        await db.commit()
+
+    # 顏色解析
+    c_int = 0x3498DB
+    if 代表色碼:
+        try:
+            cleaned = 代表色碼.replace("#", "").replace("0x", "")
+            c_int = int(cleaned, 16)
+        except Exception:
+            pass
+
+    embed = discord.Embed(title=f"📋 人物基本檔案建立成功 — 【{c_name}】", color=c_int)
+    embed.description = (
+        f"**恭喜！角色檔案已順利存檔入庫！**\n\n"
+        f"• 創作者：<@{u_id}> ｜ 身分歸屬：`{身分別.name}`\n"
+        f"• 藝名／稱號：**{stage_n}**\n"
+        f"• 基本資訊：`{性別}` ｜ `{年齡} 歲` ｜ 籍貫：`{國籍}`\n"
+        f"• 職業賽道：`{職業身分}` ｜ 主攻：`{主攻賽道}`\n"
+        f"• 身材體態：`{身高cm} cm` / `{體重kg} kg` (初始 BMI: `{initial_bmi}`)\n"
+        + (f"• 特質標籤：`{'、'.join(valid_tags)}`\n" if valid_tags else "")
+        + f"\n💰 **【初始物資】** 贈予基礎隨身零錢 **$5,000** 與銀行備用金 **$10,000**！\n"
+        f"📌 請在人設討論串中由管理員使用 `/審核通過` 進行終審，以核發專屬流光幣啟動金！"
+    )
+    if img_url:
+        embed.set_thumbnail(url=img_url)
+
+    await interaction.response.send_message(embed=embed)
 
 # -------------------- 系統就緒啟動中樞與定時排程掛載 --------------------
 @bot.event
