@@ -1215,7 +1215,7 @@ async def use_item(
     資歷稱謂="預設: 出道歷練 (可填: 修行資歷 / 入道時長)",
     第一能力組名稱="預設: 商業名氣 (可填: 江湖名望 / 朝堂威權)",
     第二能力組名稱="預設: 藝能實力 (可填: 武學修為 / 仙道道行)",
-    自訂資歷階級JSON="【選填】JSON 格式設定最低年數與稱謂，留空維持預設"
+    自訂資歷階級="【選填】JSON 格式設定最低年數與稱謂，留空維持預設"
 )
 async def custom_world_terms_cmd(
     interaction: discord.Interaction,
@@ -1226,7 +1226,7 @@ async def custom_world_terms_cmd(
     資歷稱謂: str = None,
     第一能力組名稱: str = None,
     第二能力組名稱: str = None,
-    自訂資歷階級json: str = None
+    自訂資歷階級: str = None
 ):
     g_id = interaction.guild_id
     current_terms = await get_world_terms(g_id)
@@ -1247,9 +1247,9 @@ async def custom_world_terms_cmd(
             ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
         """, (g_id, json.dumps(current_terms, ensure_ascii=False), json.dumps(current_terms, ensure_ascii=False)))
 
-        if 自訂資歷階級json:
+        if 自訂資歷階級:
             try:
-                parsed_tiers = json.loads(自訂資歷階級json.strip())
+                parsed_tiers = json.loads(自訂資歷階級.strip())
                 await db.execute("""
                     INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'custom_debut_tiers', ?)
                     ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
@@ -1271,6 +1271,7 @@ async def custom_world_terms_cmd(
         f"• 第二組能力名稱：`{current_terms['section_stat_group2']}`"
     )
     await interaction.response.send_message(embed=embed)
+
 
 # -------------------- 指令：/系統設定 --------------------
 @bot.tree.command(name="系統設定", description="【管理員專用】設定官方通知廣播頻道與社群網絡功能開關")
