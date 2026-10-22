@@ -6106,16 +6106,21 @@ async def on_ready():
     if not daily_midnight_reset_task.is_running(): daily_midnight_reset_task.start()
 
     try:
-        synced = await bot.tree.sync()
+        # 1. 先進行全域同步
+        synced_global = await bot.tree.sync()
         print(f"====================================")
-        print(f"🎉 成功同步了 {len(synced)} 個 Slash 指令！")
-        for cmd in synced:
-            print(f"📌 指令: /{cmd.name}")
+        print(f"🎉 全域指令同步完成，共 {len(synced_global)} 個指令！")
+
+        # 2. 自動將所有指令複製並同步到機器人所在的每一個伺服器（立即秒生效！）
+        for guild in bot.guilds:
+            bot.tree.copy_global_to(guild=guild)
+            synced_guild = await bot.tree.sync(guild=guild)
+            print(f"⚡ 伺服器【{guild.name}】指令已秒同步！共 {len(synced_guild)} 個指令可用。")
+            
         print(f"====================================")
     except Exception as e:
         print(f"❌ 指令同步失敗: {e}")
 
-    print(f"🌟 World Engine 系統核心已順利就緒：{bot.user}")
 
 
 # -------------------- 主程式啟動入口 --------------------
