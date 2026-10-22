@@ -4061,72 +4061,114 @@ async def schedule_broadcast_cmd(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# -------------------- 指令：/審核通過（初審與二審全自動核發） --------------------
-@bot.tree.command(name="審核通過", description="【管理員專用】兩段式審核：初審引導對話打勾、二審按年齡/資歷秘密發放初始金幣與解鎖身分")
+# -------------------- 指令：/審核通過（極簡化：只需選分類，其餘全自動抓取） --------------------
+@bot.tree.command(name="審核通過", description="【管理員專用】審核人設單討論串（只需選分類，系統自動抓取角色與成員）")
 @app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    審核角色名="人設討論串對應的角色全名",
-    給予身分組="二審通過時解鎖賦予的正式玩家身分組",
-    審核備註="選填：管理員審查評語或補充指引"
-)
+@app_commands.choices(分類=[
+    app_commands.Choice(name="🎨 原創角色", value="original"),
+    app_commands.Choice(name="👤 玩家角色 (玩家NPC)", value="player"),
+    app_commands.Choice(name="🌟 官方 NPC", value="official")
+])
+@app_commands.describe(分類="選擇該人設單核准之角色分類（原創／玩家NPC／官方）")
 async def audit_pass_cmd(
     interaction: discord.Interaction,
-    審核角色名: str,
-    給予身分組: discord.Role = None,
-    審核備註: str = "檔案格式規範健全，核准進入世界觀！"
+    分類: app_commands.Choice[str]
 ):
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("⚠️ 此指令必須在人設討論串（Thread）中執行！", ephemeral=True)
         return
 
     g_id = interaction.guild_id
-    th_id = interaction.channel_id
-    c_name = 審核角色名.strip()
+    th = interaction.channel
+    th_id = th.id
+    target_category = 分類.value
+    category_label = 分類.name
+
+    # 1. 自動辨識開串創作者
+    author_id = th.owner_id
+    if not author_id:
+        try:
+            starter = await th.fetch_message(th.id)
+            author_id = starter.author.id
+        except Exception:
+            author_id = interaction.user.id
+
+    # 2. 自動抓取角色名稱：優先從討論串名稱解析，若無則查詢該作者名下最新建立之角色
+    c_name = None
+    th_title = th.name.strip()
+    
+    # 嘗試從標題中的【】、[] 或直接名稱匹配
+    match = re.search(r"[【\[(](.*?)[】\])]", th_title)
+    candidate_name = match.group(1).strip() if match else th_title
 
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT audit_count FROM profile_audits WHERE guild_id = ? AND thread_id = ?", (g_id, th_id)) as cur:
-            audit_row = await cur.fetchone()
+        # 先以標題候選名稱去資料庫比對
+        async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, candidate_name)) as cur:
+            row = await cur.fetchone()
+            if row:
+                c_name = row[0]
+
+        # 若沒比對到，自動抓該作者在該伺服器最新的一筆角色
+        if not c_name:
+            async with db.execute("""
+                SELECT name FROM characters 
+                WHERE guild_id = ? AND user_id = ? 
+                ORDER BY created_at DESC LIMIT 1
+            """, (g_id, author_id)) as u_cur:
+                u_row = await u_cur.fetchone()
+                if u_row:
+                    c_name = u_row[0]
+
+        if not c_name:
+            await interaction.response.send_message(
+                f"❌ 系統無法自動從本討論串辨識出角色！\n請確認創作者 (<@{author_id}>) 是否已使用 `/檔案建立` 建立過角色檔案。",
+                ephemeral=True
+            )
+            return
+
+        # 3. 讀取審核次數判定（初審 / 二審）
+        async with db.execute("SELECT audit_count FROM profile_audits WHERE guild_id = ? AND thread_id = ?", (g_id, th_id)) as a_cur:
+            audit_row = await a_cur.fetchone()
 
         current_count = audit_row[0] if audit_row else 0
         new_count = current_count + 1
 
+        # 對應分類 is_npc 代碼：official=1, original=2, player=0
+        npc_code = 1 if target_category == "official" else (2 if target_category == "original" else 0)
+
         if new_count == 1:
-            # 一審通過：初審引導打勾
+            # 【一審初審通過】
             await db.execute("""
                 INSERT INTO profile_audits (guild_id, thread_id, char_name, audit_count, status)
                 VALUES (?, ?, ?, 1, '初審通過')
                 ON CONFLICT(guild_id, thread_id) DO UPDATE SET audit_count = 1, status = '初審通過'
             """, (g_id, th_id, c_name))
+            await db.execute("UPDATE characters SET is_npc = ? WHERE guild_id = ? AND name = ?", (npc_code, g_id, c_name))
             await db.commit()
 
-            embed = discord.Embed(title=f"✅【初審通過】— 角色【{c_name}】", color=0x3498DB)
+            embed = discord.Embed(title=f"✔️【初審通過】— 【{c_name}】", color=0x3498DB)
             embed.description = (
-                f"審核管理員：{interaction.user.mention}\n"
-                f"• 審查意見：`{審核備註}`\n\n"
-                f"📋 **【初審指引與注意事項】**\n"
-                f"1. 請創作者確認身材數值、國籍、職業與特質標籤是否合乎世界觀設定。\n"
-                f"2. 檔案格式已基本達標，已標記初審打勾 ✔️！\n"
-                f"3. 請等候二審管理員覆核，完成二審後將自動發放初始啟動金與身分組！"
+                f"• 角色名稱：**{c_name}** (<@{author_id}>)\n"
+                f"• 核定類別：`{category_label}`\n"
+                f"• 審核管理員：{interaction.user.mention}\n\n"
+                f"📋 檔案格式初審合格，已標記初審打勾 ✔️！\n"
+                f"請靜待管理組覆核，完成二審後系統將全自動秘密發放初始啟動資金！"
             )
             await interaction.response.send_message(embed=embed)
             return
 
-        elif new_count >= 2:
-            # 二審通過：按公式核發初始資金與身分組
-            async with db.execute("SELECT user_id, age, debut_years FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as c_cur:
+        else:
+            # 【二審終審通過】自動核發初始金幣與更新分類
+            async with db.execute("SELECT age, debut_years FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as c_cur:
                 c_data = await c_cur.fetchone()
 
-            if not c_data:
-                await interaction.response.send_message(f"❌ 查無角色檔案【{c_name}】！請先確認其已完成 `/檔案建立`。", ephemeral=True)
-                return
-
-            u_id, age, debut_y = c_data
+            age, debut_y = c_data if c_data else (20, 0)
             d_years = debut_y or 0
 
-            # 初始啟動資金換算公式：基礎 20,000 + (年齡 * 500) + (資歷 * 5,000)
+            # 初始啟動金公式：基礎 20,000 + (年齡 * 500) + (資歷 * 5,000)
             initial_grant = 20000 + (age * 500) + (d_years * 5000)
 
-            await db.execute("UPDATE characters SET bank = bank + ? WHERE guild_id = ? AND name = ?", (initial_grant, g_id, c_name))
+            await db.execute("UPDATE characters SET bank = bank + ?, is_npc = ? WHERE guild_id = ? AND name = ?", (initial_grant, npc_code, g_id, c_name))
             await db.execute("""
                 INSERT INTO profile_audits (guild_id, thread_id, char_name, audit_count, status)
                 VALUES (?, ?, ?, 2, '正式通過')
@@ -4134,25 +4176,16 @@ async def audit_pass_cmd(
             """, (g_id, th_id, c_name))
             await db.commit()
 
-            role_msg = ""
-            if 給予身分組:
-                member = interaction.guild.get_member(u_id)
-                if member:
-                    try:
-                        await member.add_roles(給予身分組, reason=f"人設單【{c_name}】二審正式通過解鎖")
-                        role_msg = f"\n🎖️ 已自動解鎖正式身分組：{給予身分組.mention}！"
-                    except Exception:
-                        pass
-
-            embed = discord.Embed(title=f"🎉🏆【二審終審通過・正式入駐】— 【{c_name}】", color=0x2ECC71)
+            embed = discord.Embed(title=f"🎉🏆【審核完成・正式入駐】— 【{c_name}】", color=0x2ECC71)
             embed.description = (
-                f"審核管理員：{interaction.user.mention}\n"
-                f"創作者：<@{u_id}>\n"
-                f"• 評語：`{審核備註}`\n\n"
-                f"💰 **【初始資源與啟動金核發】**\n"
-                f"• 依據年齡 ({age}歲) 與資歷 ({d_years}年) 計算：\n"
-                f"• 系統已自動將 **+${initial_grant:,}** 存入 **{c_name}** 的銀行帳戶！{role_msg}\n\n"
-                f"🌟 人設單已正式收錄入庫，祝在世界觀中歷練愉快！"
+                f"恭喜 <@{author_id}>！人設單已通過終審並正式存檔！\n\n"
+                f"• 角色全名：**{c_name}**\n"
+                f"• 身分屬性：`{category_label}`\n"
+                f"• 審核管理員：{interaction.user.mention}\n\n"
+                f"💰 **【初始資源系統自動發放】**\n"
+                f"• 依年齡 ({age}歲) 與資歷 ({d_years}年) 計算：\n"
+                f"• 系統已自動將啟動金 **+${initial_grant:,}** 匯入 **{c_name}** 的銀行帳戶！\n\n"
+                f"角色檔案現已正式生效，可使用 `/查看` 調閱雙頁檔案開始遊玩！"
             )
             await interaction.response.send_message(embed=embed)
             return
