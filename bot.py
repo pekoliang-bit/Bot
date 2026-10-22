@@ -23,6 +23,398 @@ except ImportError:
 from discord import app_commands
 from discord.ext import commands, tasks
 from flask import Flask
+# -------------------- 資料庫完整初始化（包含所有資料表） --------------------
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        # 1. 角色總表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS characters (
+                guild_id INTEGER,
+                user_id INTEGER,
+                name TEXT,
+                stage_name TEXT DEFAULT '',
+                age INTEGER,
+                gender TEXT,
+                job TEXT,
+                faction TEXT DEFAULT '無',
+                tags TEXT DEFAULT '',
+                relationship_status TEXT DEFAULT '單身',
+                cp_info TEXT DEFAULT '{}',
+                cash INTEGER DEFAULT 0,
+                bank INTEGER DEFAULT 0,
+                works TEXT DEFAULT '[]',
+                created_at REAL,
+                stats TEXT DEFAULT '{}',
+                ticket_ban_until REAL DEFAULT 0,
+                rank TEXT DEFAULT '未定級',
+                is_npc INTEGER DEFAULT 0,
+                company_id INTEGER DEFAULT 0,
+                image_url TEXT DEFAULT '',
+                height INTEGER DEFAULT 170,
+                weight INTEGER DEFAULT 55,
+                nationality TEXT DEFAULT '本國',
+                education TEXT DEFAULT '大學',
+                orientation TEXT DEFAULT '保密',
+                primary_track TEXT DEFAULT '常規',
+                char_health INTEGER DEFAULT 100,
+                affiliation_type TEXT DEFAULT '單打獨鬥',
+                affiliation_name TEXT DEFAULT '無',
+                debut_years INTEGER DEFAULT 0,
+                debut_age INTEGER DEFAULT 0,
+                theme_color TEXT DEFAULT '',
+                action_points INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, name)
+            )
+        """)
+
+        # 2. 個人背包表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                item_name TEXT,
+                amount INTEGER,
+                giver TEXT DEFAULT '系統商城'
+            )
+        """)
+
+        # 3. 商城商品表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS shop_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                shop_name TEXT,
+                name TEXT,
+                price INTEGER,
+                description TEXT,
+                stat_bonus TEXT DEFAULT '',
+                affinity_bonus INTEGER DEFAULT 0,
+                usable INTEGER DEFAULT 1,
+                target_role_id INTEGER DEFAULT 0,
+                seller TEXT DEFAULT '官方',
+                asset_type TEXT DEFAULT '一般',
+                faction_name TEXT DEFAULT '',
+                stock INTEGER DEFAULT -1,
+                UNIQUE(guild_id, shop_name, name)
+            )
+        """)
+
+        # 4. 可購置資產表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS available_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                asset_type TEXT,
+                asset_name TEXT,
+                price INTEGER,
+                description TEXT DEFAULT ''
+            )
+        """)
+
+        # 5. 個人產權表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS personal_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                asset_type TEXT,
+                asset_name TEXT,
+                price INTEGER,
+                details TEXT DEFAULT ''
+            )
+        """)
+
+        # 6. 人際關係網絡表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS relationships (
+                guild_id INTEGER,
+                from_char TEXT,
+                to_char TEXT,
+                tendency TEXT DEFAULT '普通',
+                affection INTEGER DEFAULT 0,
+                status_desc TEXT DEFAULT '初識',
+                PRIMARY KEY (guild_id, from_char, to_char)
+            )
+        """)
+
+        # 7. 全域系統動態設定表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                guild_id INTEGER,
+                key TEXT,
+                value TEXT,
+                PRIMARY KEY (guild_id, key)
+            )
+        """)
+
+        # 8. 審核二次進度表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS profile_audits (
+                guild_id INTEGER,
+                thread_id INTEGER,
+                char_name TEXT,
+                audit_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT '審核中',
+                PRIMARY KEY (guild_id, thread_id)
+            )
+        """)
+
+        # 9. 公司經營體系表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                purpose TEXT,
+                type_name TEXT,
+                structure TEXT,
+                creator_name TEXT,
+                partners TEXT DEFAULT '[]',
+                total_capital INTEGER DEFAULT 0,
+                split_ratio REAL DEFAULT 0.5,
+                allowed_jobs TEXT DEFAULT '',
+                balance INTEGER DEFAULT 0
+            )
+        """)
+
+        # 10. 陣營總表與成員表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS factions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                name TEXT,
+                desc TEXT,
+                tax_rate REAL DEFAULT 0.1,
+                exit_fee INTEGER DEFAULT 5000,
+                treasury INTEGER DEFAULT 0,
+                weekly_gift TEXT DEFAULT '{}',
+                top_rewards TEXT DEFAULT '[]'
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS faction_members (
+                guild_id INTEGER,
+                faction_name TEXT,
+                char_name TEXT,
+                contribution INTEGER DEFAULT 0,
+                last_gift_week INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, faction_name, char_name)
+            )
+        """)
+
+        # 11. 任務與歷程表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                category TEXT,
+                title TEXT,
+                reward_cash INTEGER DEFAULT 0,
+                reward_items TEXT DEFAULT '[]',
+                reward_stats TEXT DEFAULT '',
+                achievement TEXT DEFAULT '',
+                honor TEXT DEFAULT '',
+                requirement TEXT DEFAULT '',
+                time_limit TEXT DEFAULT '',
+                report_channel_id INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quest_completions (
+                guild_id INTEGER,
+                char_name TEXT,
+                quest_title TEXT,
+                completed_at REAL,
+                PRIMARY KEY (guild_id, char_name, quest_title)
+            )
+        """)
+
+        # 12. 地位限制表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS rank_settings (
+                guild_id INTEGER,
+                rank_order INTEGER,
+                rank_name TEXT,
+                work_req TEXT DEFAULT '',
+                endorse_req TEXT DEFAULT '',
+                stat_req TEXT DEFAULT '',
+                max_slots INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, rank_order)
+            )
+        """)
+
+        # 13. 門票簽證表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                user_id INTEGER,
+                role_id INTEGER,
+                ticket_name TEXT,
+                start_time REAL,
+                expire_time REAL
+            )
+        """)
+
+        # 14. 傳聞表與寵物表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS character_rumors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                rumor_text TEXT,
+                created_at REAL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS character_pets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                owner_name TEXT,
+                pet_type TEXT,
+                pet_name TEXT,
+                health INTEGER DEFAULT 500,
+                lifespan_years INTEGER,
+                adopted_at REAL,
+                death_time REAL,
+                is_dead INTEGER DEFAULT 0,
+                funeral_done INTEGER DEFAULT 0
+            )
+        """)
+
+        # 15. 劇情設定與攻略進度表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS story_scripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                npc_name TEXT,
+                story_title TEXT,
+                unlock_condition TEXT,
+                script_link TEXT,
+                script_content TEXT,
+                is_active INTEGER DEFAULT 1,
+                UNIQUE(guild_id, npc_name, story_title)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS character_story_progress (
+                guild_id INTEGER,
+                char_name TEXT,
+                npc_name TEXT,
+                story_title TEXT,
+                current_node INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                meet_count INTEGER DEFAULT 0,
+                PRIMARY KEY (guild_id, char_name, npc_name, story_title)
+            )
+        """)
+
+        # 16. 社群頻道與規則表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS social_monitor_channels (
+                guild_id INTEGER,
+                channel_id INTEGER PRIMARY KEY,
+                platform_name TEXT DEFAULT '社群動態'
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS social_reaction_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                trigger_type TEXT,
+                trigger_key TEXT,
+                target_type TEXT DEFAULT 'author',
+                stat_changes TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS social_relations (
+                guild_id INTEGER,
+                from_char TEXT,
+                to_char TEXT,
+                relation_type TEXT,
+                created_at REAL,
+                PRIMARY KEY (guild_id, from_char, to_char)
+            )
+        """)
+
+        # 17. 地點日程動作設定表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS action_places (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                category TEXT,
+                action_name TEXT,
+                description TEXT,
+                cost_ap INTEGER DEFAULT 1,
+                cost_money INTEGER DEFAULT 0,
+                reward_money INTEGER DEFAULT 0,
+                health_change INTEGER DEFAULT 0,
+                fixed_stat_change TEXT DEFAULT '',
+                random_stat_types TEXT DEFAULT '',
+                special_rewards TEXT DEFAULT '',
+                UNIQUE(guild_id, category, action_name)
+            )
+        """)
+
+        # 18. 路人專用庫（相片、姓名庫）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS crowd_photos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                image_url TEXT,
+                gender TEXT DEFAULT '通用',
+                used INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS crowd_names (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                region TEXT,
+                name_type TEXT,
+                gender TEXT DEFAULT '通用',
+                val TEXT
+            )
+        """)
+
+        # 19. 每日行動與課程限制追蹤表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_action_limits (
+                guild_id INTEGER,
+                char_name TEXT,
+                date_str TEXT,
+                course_counts TEXT DEFAULT '{}',
+                work_places TEXT DEFAULT '[]',
+                PRIMARY KEY (guild_id, char_name, date_str)
+            )
+        """)
+
+        # 20. 娛樂城全服樂透獎池表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS lottery_jackpot (
+                guild_id INTEGER PRIMARY KEY,
+                jackpot_pool INTEGER DEFAULT 10000,
+                ticket_price INTEGER DEFAULT 200,
+                draw_time REAL DEFAULT 0,
+                winning_numbers TEXT DEFAULT ''
+            )
+        """)
+
+        # 21. 玩家持有的本期樂透彩券表
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS lottery_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER,
+                char_name TEXT,
+                user_id INTEGER,
+                numbers TEXT,
+                bought_at REAL
+            )
+        """)
+        await db.commit()
 
 # -------------------- 輕量假網頁（防雲端主機休眠） --------------------
 web_app = Flask(__name__)
