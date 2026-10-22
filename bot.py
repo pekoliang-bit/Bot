@@ -6087,13 +6087,13 @@ async def create_profile_cmd(
 # -------------------- 系統就緒啟動中樞與定時排程掛載 --------------------
 @bot.event
 async def on_ready():
-    # 初始化資料庫所有資料表
+    # 初始化資料庫
     await init_db()
     await extend_database_tables()
     await init_auction_table()
     await init_leaderboard_tables()
 
-    # 啟動 10 大背景定時任務
+    # 啟動背景任務
     if not daily_interest.is_running(): daily_interest.start()
     if not monthly_age_up.is_running(): monthly_age_up.start()
     if not check_ticket_expiration.is_running(): check_ticket_expiration.start()
@@ -6105,22 +6105,19 @@ async def on_ready():
     if not check_auction_closings_task.is_running(): check_auction_closings_task.start()
     if not daily_midnight_reset_task.is_running(): daily_midnight_reset_task.start()
 
+    print(f"====================================")
+    print(f"🌟 機器人已就緒：{bot.user} (ID: {bot.user.id})")
+    
+    # 強制將所有指令同步至機器人所在的每個伺服器（秒生效）
     try:
-        # 1. 先進行全域同步
-        synced_global = await bot.tree.sync()
-        print(f"====================================")
-        print(f"🎉 全域指令同步完成，共 {len(synced_global)} 個指令！")
-
-        # 2. 自動將所有指令複製並同步到機器人所在的每一個伺服器（立即秒生效！）
         for guild in bot.guilds:
             bot.tree.copy_global_to(guild=guild)
-            synced_guild = await bot.tree.sync(guild=guild)
-            print(f"⚡ 伺服器【{guild.name}】指令已秒同步！共 {len(synced_guild)} 個指令可用。")
-            
-        print(f"====================================")
+            synced = await bot.tree.sync(guild=guild)
+            print(f"⚡ 伺服器【{guild.name}】已同步 {len(synced)} 個 Slash 指令！")
     except Exception as e:
         print(f"❌ 指令同步失敗: {e}")
-
+        
+    print(f"====================================")
 
 
 # -------------------- 主程式啟動入口 --------------------
