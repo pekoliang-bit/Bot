@@ -4060,9 +4060,8 @@ async def schedule_broadcast_cmd(
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# -------------------- 指令：/審核通過（極簡化：只需選分類，其餘全自動抓取） --------------------
-@bot.tree.command(name="審核通過", description="【管理員專用】審核人設單討論串（只需選分類，系統自動抓取角色與成員）")
+# -------------------- 指令：/審核通過（隱藏計算公式與明細） --------------------
+@bot.tree.command(name="審核通過", description="【管理員專用】審核人設單討論串（選分類，後台自動結算初始啟動金，不公開公式）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(分類=[
     app_commands.Choice(name="🎨 原創角色", value="original"),
@@ -4093,22 +4092,18 @@ async def audit_pass_cmd(
         except Exception:
             author_id = interaction.user.id
 
-    # 2. 自動抓取角色名稱：優先從討論串名稱解析，若無則查詢該作者名下最新建立之角色
+    # 2. 自動抓取角色名稱
     c_name = None
     th_title = th.name.strip()
-    
-    # 嘗試從標題中的【】、[] 或直接名稱匹配
     match = re.search(r"[【\[(](.*?)[】\])]", th_title)
     candidate_name = match.group(1).strip() if match else th_title
 
     async with aiosqlite.connect(DB_PATH) as db:
-        # 先以標題候選名稱去資料庫比對
         async with db.execute("SELECT name FROM characters WHERE guild_id = ? AND name = ?", (g_id, candidate_name)) as cur:
             row = await cur.fetchone()
             if row:
                 c_name = row[0]
 
-        # 若沒比對到，自動抓該作者在該伺服器最新的一筆角色
         if not c_name:
             async with db.execute("""
                 SELECT name FROM characters 
@@ -4133,7 +4128,6 @@ async def audit_pass_cmd(
         current_count = audit_row[0] if audit_row else 0
         new_count = current_count + 1
 
-        # 對應分類 is_npc 代碼：official=1, original=2, player=0
         npc_code = 1 if target_category == "official" else (2 if target_category == "original" else 0)
 
         if new_count == 1:
@@ -4152,23 +4146,60 @@ async def audit_pass_cmd(
                 f"• 核定類別：`{category_label}`\n"
                 f"• 審核管理員：{interaction.user.mention}\n\n"
                 f"📋 檔案格式初審合格，已標記初審打勾 ✔️！\n"
-                f"請靜待管理組覆核，完成二審後系統將全自動秘密發放初始啟動資金！"
+                f"請靜待管理組覆核，完成二審後系統將自動發放初始啟動資金！"
             )
             await interaction.response.send_message(embed=embed)
             return
 
         else:
-            # 【二審終審通過】自動核發初始金幣與更新分類
-            async with db.execute("SELECT age, debut_years FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as c_cur:
+            # 【二審終審通過】後台依照數值清單權重精確結算，前台不洩漏公式
+            async with db.execute("SELECT age, debut_years, stats FROM characters WHERE guild_id = ? AND name = ?", (g_id, c_name)) as c_cur:
                 c_data = await c_cur.fetchone()
 
-            age, debut_y = c_data if c_data else (20, 0)
+            age, debut_y, stats_json = c_data if c_data else (20, 0, "{}")
             d_years = debut_y or 0
+            stats = json.loads(stats_json or "{}")
 
-            # 初始啟動金公式：基礎 20,000 + (年齡 * 500) + (資歷 * 5,000)
-            initial_grant = 20000 + (age * 500) + (d_years * 5000)
+            # 抓取各項屬性
+            s_traffic = stats.get("流量熱度", 0)
+            s_comm = stats.get("商業價值", 0)
+            s_passer = stats.get("路人緣", 0)
+            s_pr = stats.get("公關", 0)
+            s_impact = stats.get("影響指數", 0)
+            s_face = stats.get("容貌", 0)
+            s_intel = stats.get("才智", 0)
+            s_talent = stats.get("個人才藝", 0)
 
-            await db.execute("UPDATE characters SET bank = bank + ?, is_npc = ? WHERE guild_id = ? AND name = ?", (initial_grant, npc_code, g_id, c_name))
+            # 賽道總合：唱跳 + 演繹 + 主持 + 歌唱 + 綜藝
+            s_dance = stats.get("唱跳", 0)
+            s_act = stats.get("演繹", 0)
+            s_host = stats.get("主持", 0)
+            s_sing = stats.get("歌唱", 0)
+            s_variety = stats.get("綜藝", 0)
+            track_sum = s_dance + s_act + s_host + s_sing + s_variety
+
+            # 後台權重乘積計算
+            val_traffic = s_traffic * 80
+            val_comm = s_comm * 100
+            val_passer = s_passer * 30
+            val_pr = s_pr * 20
+            val_impact = s_impact * 50
+            val_face = s_face * 40
+            val_intel = s_intel * 20
+            val_track = track_sum * 30
+            val_talent = s_talent * 40
+
+            stats_total_money = (
+                val_traffic + val_comm + val_passer + val_pr +
+                val_impact + val_face + val_intel + val_track + val_talent
+            )
+
+            # 基礎履歷加成
+            base_resume_money = 20000 + (age * 500) + (d_years * 5000)
+            final_total_grant = stats_total_money + base_resume_money
+
+            # 存入銀行並標記正式通過
+            await db.execute("UPDATE characters SET bank = bank + ?, is_npc = ? WHERE guild_id = ? AND name = ?", (final_total_grant, npc_code, g_id, c_name))
             await db.execute("""
                 INSERT INTO profile_audits (guild_id, thread_id, char_name, audit_count, status)
                 VALUES (?, ?, ?, 2, '正式通過')
@@ -4176,19 +4207,22 @@ async def audit_pass_cmd(
             """, (g_id, th_id, c_name))
             await db.commit()
 
-            embed = discord.Embed(title=f"🎉🏆【審核完成・正式入駐】— 【{c_name}】", color=0x2ECC71)
-            embed.description = (
+            # 公開面板：僅告知審核通過與發放總額，不洩漏任何公式或各項權重
+            public_embed = discord.Embed(title=f"🎉🏆【審核完成・正式入駐】— 【{c_name}】", color=0x2ECC71)
+            public_embed.description = (
                 f"恭喜 <@{author_id}>！人設單已通過終審並正式存檔！\n\n"
                 f"• 角色全名：**{c_name}**\n"
                 f"• 身分屬性：`{category_label}`\n"
                 f"• 審核管理員：{interaction.user.mention}\n\n"
-                f"💰 **【初始資源系統自動發放】**\n"
-                f"• 依年齡 ({age}歲) 與資歷 ({d_years}年) 計算：\n"
-                f"• 系統已自動將啟動金 **+${initial_grant:,}** 匯入 **{c_name}** 的銀行帳戶！\n\n"
-                f"角色檔案現已正式生效，可使用 `/查看` 調閱雙頁檔案開始遊玩！"
+                f"💰 **【初始資源核發】**\n"
+                f"經系統綜合綜合評定，初始啟動資金 **${final_total_grant:,} 流光幣** 已全數匯入 **{c_name}** 的銀行帳戶！\n\n"
+                f"角色檔案現已正式生效，可使用 `/查看` 開始體驗！"
             )
-            await interaction.response.send_message(embed=embed)
+
+            await interaction.response.send_message(embed=public_embed)
             return
+
+
 
 # -------------------- 【資產系統】完整模組 --------------------
 class JoinCompanyApprovalView(discord.ui.View):
