@@ -1228,12 +1228,9 @@ class MasterDirectoryView(discord.ui.View):
             "• /陣營、/陣營排行榜：陣營九大事務操作與全服總威望榜\n"
             "• /寵物購買、/喪禮結算：認養毛小孩與身後悼念結算"
         )
-
         await interaction.response.send_message(text, ephemeral=True)
 
     @discord.ui.button(label="🛡️ 管理員指令", style=discord.ButtonStyle.danger, row=0)
-    async def cmd_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
-            @discord.ui.button(label="🛡️ 管理員指令", style=discord.ButtonStyle.danger, row=0)
     async def cmd_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         text = (
             "**👑 管理員整合控制指令：**\n"
@@ -1246,16 +1243,14 @@ class MasterDirectoryView(discord.ui.View):
             "• /任務新增：發布各類通告任務與限時任務\n"
             "• /審核通過：兩段式審核人設單（初審打勾、二審核發啟動金與身分組）\n"
             "• /商城總管：商品上下架、發放薪水至手頭現金\n"
-            "• /陣營管理：建立陣營、金主注資、全陣營榮耀犒賞\n"
-            "• /資產系統更新：上架全新名車房產物業\n"
+            "• /陣營：新增陣營、捐獻、金主、查看領週禮包、買商城、退陣營、加入、全體加成\n"
+            "• /資產系統與資產系統更新：購置名車房產、申請加入、創建或上架新資產\n"
             "• /排行榜管理：自由增減排行榜並自訂加減乘除公式\n"
             "• /彩票管理：設定比大小底注、刮刮樂與樂透搖號開獎\n"
             "• /違規懲戒：警告扣10%/20%數值；第3次封殺踢出、撕卡瓜分遺產與拍賣\n"
             "• /發布傳聞：發布傳聞，累積滿3次自動貼標籤\n"
             "• /預約公告發獎：排程全自動發放福利並廣播公告"
         )
-        await interaction.response.send_message(text, ephemeral=True)
-
         await interaction.response.send_message(text, ephemeral=True)
 
     @discord.ui.button(label="🏷️ 標籤庫", style=discord.ButtonStyle.secondary, row=1)
@@ -1268,8 +1263,9 @@ class MasterDirectoryView(discord.ui.View):
 
 @bot.tree.command(name="檔案總覽", description="調閱全系統分類導航總目錄（指令、路人、玩家、標籤）")
 async def master_overview_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(title="📑 系統檔案與指令整合導航中心", description="請點選下方按鈕切換查閱各項名冊、指引與標籤規則：", color=0x2C3E50)
+    embed = discord.Embed(title="📑 系統檔案與指令整合導航中心", description="請點選下方按鈕切換查閱各項名冊、指引與標籤規則：", color=0x2ECC71)
     await interaction.response.send_message(embed=embed, view=MasterDirectoryView(interaction.guild_id), ephemeral=True)
+
 # -------------------- 指令：/查看（個人角色雙頁面板調閱） --------------------
 @bot.tree.command(name="查看", description="調閱個人角色或原創角色面板（含數值、歷練、寵物、傳聞與攻略指引）")
 @app_commands.describe(角色名="【選填】欲直接查閱的角色姓名，留空則開啟名下選單")
