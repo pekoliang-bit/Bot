@@ -6087,36 +6087,50 @@ async def create_profile_cmd(
 # -------------------- 系統就緒啟動中樞與定時排程掛載 --------------------
 @bot.event
 async def on_ready():
-    # 初始化資料庫
-    await init_db()
-    await extend_database_tables()
-    await init_auction_table()
-    await init_leaderboard_tables()
+    print("====================================")
+    print(f"🌟 機器人已成功觸發 on_ready 事件！正在初始化系統...")
 
-    # 啟動背景任務
-    if not daily_interest.is_running(): daily_interest.start()
-    if not monthly_age_up.is_running(): monthly_age_up.start()
-    if not check_ticket_expiration.is_running(): check_ticket_expiration.start()
-    if not daily_pet_routine.is_running(): daily_pet_routine.start()
-    if not crowd_npc_fluctuation_task.is_running(): crowd_npc_fluctuation_task.start()
-    if not weekly_fans_and_haters_settlement.is_running(): weekly_fans_and_haters_settlement.start()
-    if not yearly_action_points_reset.is_running(): yearly_action_points_reset.start()
-    if not check_scheduled_broadcasts_task.is_running(): check_scheduled_broadcasts_task.start()
-    if not check_auction_closings_task.is_running(): check_auction_closings_task.start()
-    if not daily_midnight_reset_task.is_running(): daily_midnight_reset_task.start()
-
-    print(f"====================================")
-    print(f"🌟 機器人已就緒：{bot.user} (ID: {bot.user.id})")
-    
-    # -------------------- 全域通用指令同步 (不綁定任何單一伺服器) --------------------
+    # 1. 初始化資料庫
     try:
-        synced = await bot.tree.sync()
-        print(f"====================================")
-        print(f"🎉 已成功向 Discord 官方註冊 {len(synced)} 個全域 Slash 指令！")
-        print(f"🌍 機器人已完全解綁特定伺服器，任何加入的伺服器皆可通用。")
-        print(f"====================================")
+        await init_db()
+        await extend_database_tables()
+        await init_auction_table()
+        await init_leaderboard_tables()
+        print("✅ 資料庫結構初始化成功")
     except Exception as e:
-        print(f"❌ 全域指令同步失敗: {e}")
+        print(f"⚠️ 資料庫初始化錯誤: {e}")
+
+    # 2. 啟動背景定時任務
+    try:
+        if not daily_interest.is_running(): daily_interest.start()
+        if not monthly_age_up.is_running(): monthly_age_up.start()
+        if not check_ticket_expiration.is_running(): check_ticket_expiration.start()
+        if not daily_pet_routine.is_running(): daily_pet_routine.start()
+        if not crowd_npc_fluctuation_task.is_running(): crowd_npc_fluctuation_task.start()
+        if not weekly_fans_and_haters_settlement.is_running(): weekly_fans_and_haters_settlement.start()
+        if not yearly_action_points_reset.is_running(): yearly_action_points_reset.start()
+        if not check_scheduled_broadcasts_task.is_running(): check_scheduled_broadcasts_task.start()
+        if not check_auction_closings_task.is_running(): check_auction_closings_task.start()
+        if not daily_midnight_reset_task.is_running(): daily_midnight_reset_task.start()
+        print("✅ 背景排程任務啟動完畢")
+    except Exception as e:
+        print(f"⚠️ 背景任務啟動錯誤: {e}")
+
+    # 3. 雙向同步指令（全域同步 + 當前在籍伺服器同步）
+    # 這樣既不綁定特定伺服器（未來加新群自動全域），當前群又不用等 1 小時！
+    try:
+        print("⏳ 正在向 Discord 同步全域指令...")
+        synced_global = await bot.tree.sync()
+        print(f"🎉 已成功向 Discord 官方註冊 {len(synced_global)} 個全域 Slash 指令！")
+
+        for g in bot.guilds:
+            bot.tree.copy_global_to(guild=g)
+            s_guild = await bot.tree.sync(guild=g)
+            print(f"⚡ 伺服器【{g.name}】已同步 {len(s_guild)} 個指令！")
+    except Exception as e:
+        print(f"❌ 指令同步失敗: {e}")
+
+    print("====================================")
 
 
 # -------------------- 主程式啟動入口 --------------------
