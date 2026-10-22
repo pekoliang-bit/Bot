@@ -1235,7 +1235,7 @@ class MasterDirectoryView(discord.ui.View):
         text = (
             "**👑 管理員整合控制指令：**\n"
             "• /系統頻道與開關總管：綁定通知大廳、社群頻道、時間流速與存款利息\n"
-            "• /人物與NPC總管：登記官方NPC、生成路人、路人轉正、48小時生態浮動\n"
+            "• /人物與npc總管：登記官方NPC、生成路人、路人轉正、48小時生態浮動\n"
             "• /世界觀自訂：置換全服面板詞彙、組織名冊與各組屬性清單\n"
             "• /標籤管理：擴充常規標籤、雙向衝突組、設定特殊限定標籤\n"
             "• /動作設定：自訂地點行為、AP與金錢消耗、打工報酬、掉落道具機率\n"
@@ -2104,7 +2104,7 @@ async def faction_leaderboard_cmd(
         embed.set_footer(text="內部貢獻直接反映成員在陣營中的話語權")
         await interaction.response.send_message(embed=embed)
 # -------------------- 指令：/人物與NPC總管 --------------------
-@bot.tree.command(name="人物與NPC總管", description="【管理員專用】登記官方NPC、批量生成大眾路人、路人轉正與生態浮動設定")
+@bot.tree.command(name="人物與npc總管", description="【管理員專用】登記官方NPC、批量生成大眾路人、路人轉正與生態浮動設定")
 @app_commands.default_permissions(administrator=True)
 @app_commands.choices(操作=[
     app_commands.Choice(name="🌟 登記/更新官方重要人物 (NPC)", value="create_official"),
