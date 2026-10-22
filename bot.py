@@ -6108,16 +6108,15 @@ async def on_ready():
     print(f"====================================")
     print(f"🌟 機器人已就緒：{bot.user} (ID: {bot.user.id})")
     
-    # 強制將所有指令同步至機器人所在的每個伺服器（秒生效）
+    # -------------------- 全域通用指令同步 (不綁定任何單一伺服器) --------------------
     try:
-        for guild in bot.guilds:
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"⚡ 伺服器【{guild.name}】已同步 {len(synced)} 個 Slash 指令！")
+        synced = await bot.tree.sync()
+        print(f"====================================")
+        print(f"🎉 已成功向 Discord 官方註冊 {len(synced)} 個全域 Slash 指令！")
+        print(f"🌍 機器人已完全解綁特定伺服器，任何加入的伺服器皆可通用。")
+        print(f"====================================")
     except Exception as e:
-        print(f"❌ 指令同步失敗: {e}")
-        
-    print(f"====================================")
+        print(f"❌ 全域指令同步失敗: {e}")
 
 
 # -------------------- 主程式啟動入口 --------------------
