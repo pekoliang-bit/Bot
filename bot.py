@@ -1204,49 +1204,85 @@ async def use_item(
     await interaction.response.send_message(
         f"✨ **{c_name}** 成功使用了道具【**{i_name}**】×{use_cnt}！{body_change_msg}{bonus_msg}{extra_msg}{pet_heal_msg}"
     )
-# -------------------- 指令：/世界觀自訂 --------------------
-@bot.tree.command(name="世界觀自訂", description="【管理員專用】自訂面板所有用詞與資歷稱謂，適配修仙/武俠/宮廷/西方等世界觀")
+# -------------------- 指令：/世界觀自訂（支援多詞彙空白隔開，不限數量） --------------------
+@bot.tree.command(name="世界觀自訂", description="【管理員專用】自訂面板所有用詞、組織名冊與各組屬性清單（多個詞以空格隔開即可）")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
-    面板第一頁標題="預設: 個人基本檔案",
-    能力第二頁標題="預設: 演藝能力面板",
-    主攻賽道稱謂="預設: 主攻賽道 (修仙可填: 本命靈根 / 武學宗門)",
-    組織稱謂="預設: 歸屬組織 (可填: 宗門勢力 / 家族朝廷)",
-    資歷稱謂="預設: 出道歷練 (可填: 修行資歷 / 入道時長)",
-    第一能力組名稱="預設: 商業名氣 (可填: 江湖名望 / 朝堂威權)",
-    第二能力組名稱="預設: 藝能實力 (可填: 武學修為 / 仙道道行)",
-    自訂資歷階級="【選填】JSON 格式設定最低年數與稱謂，留空維持預設"
+    面板第一頁標題="預設: 個人基本檔案 (例如: 仙途履歷)",
+    能力第二頁標題="預設: 演藝能力面板 (例如: 道行境界面板)",
+    賽道系統名稱="賽道欄位名稱 (例如: 主攻賽道、本命靈根、核心傳承)",
+    賽道可選清單="多個以空格隔開，不限數量 (例如: 劍修 體修 丹道 陣法 符道 禦獸)",
+    組織系統名稱="組織欄位名稱 (例如: 歸屬組織、宗門家族、效忠陣營)",
+    組織可選清單="多個以空格隔開，不限數量 (例如: 青雲宗 萬劍山莊 縹緲閣 玄陰殿 天策府)",
+    第一能力組名稱="第一組屬性標題 (例如: 江湖聲望、商業名氣、朝堂威權)",
+    第一組能力清單="多個以空格隔開，不限數量 (例如: 聲望 威壓 功名 香火 人脈 貢獻)",
+    第二能力組名稱="第二組屬性標題 (例如: 仙道修為、藝能實力、基礎根骨)",
+    第二組能力清單="多個以空格隔開，不限數量 (例如: 根骨 悟性 靈力 神識 氣血 壽元)",
+    資歷稱謂="資歷欄位名稱 (例如: 修行年歲、入道時長、出道歷練)",
+    自訂資歷階級="【選填】JSON 格式階梯稱號，留空維持預設"
 )
 async def custom_world_terms_cmd(
     interaction: discord.Interaction,
     面板第一頁標題: str = None,
     能力第二頁標題: str = None,
-    主攻賽道稱謂: str = None,
-    組織稱謂: str = None,
-    資歷稱謂: str = None,
+    賽道系統名稱: str = None,
+    賽道可選清單: str = None,
+    組織系統名稱: str = None,
+    組織可選清單: str = None,
     第一能力組名稱: str = None,
+    第一組能力清單: str = None,
     第二能力組名稱: str = None,
+    第二組能力清單: str = None,
+    資歷稱謂: str = None,
     自訂資歷階級: str = None
 ):
     g_id = interaction.guild_id
     current_terms = await get_world_terms(g_id)
 
+    # 1. 面板標題與基本稱謂
     if 面板第一頁標題: current_terms["page1_title"] = 面板第一頁標題.strip()
     if 能力第二頁標題: current_terms["page2_title"] = 能力第二頁標題.strip()
-    if 主攻賽道稱謂: current_terms["term_track"] = 主攻賽道稱謂.strip()
-    if 組織稱謂: current_terms["term_org"] = 組織稱謂.strip()
+    if 賽道系統名稱: current_terms["term_track"] = 賽道系統名稱.strip()
+    if 組織系統名稱: current_terms["term_org"] = 組織系統名稱.strip()
     if 資歷稱謂: 
         current_terms["term_debut"] = 資歷稱謂.strip()
         current_terms["term_debut_years"] = 資歷稱謂.strip()
     if 第一能力組名稱: current_terms["section_stat_group1"] = 第一能力組名稱.strip()
     if 第二能力組名稱: current_terms["section_stat_group2"] = 第二能力組名稱.strip()
 
+    # 2. 多項能力與組織清單（以正則拆解空白、頓號、逗號）
+    def split_items(raw_str: str) -> list:
+        if not raw_str: return []
+        return [item.strip() for item in re.split(r"[,，、\s]+", raw_str.strip()) if item.strip()]
+
+    track_list = split_items(賽道可選清單)
+    if track_list: current_terms["track_list"] = track_list
+
+    org_list = split_items(組織可選清單)
+    if org_list: current_terms["org_list"] = org_list
+
+    group1_stats = split_items(第一組能力清單)
+    if group1_stats: current_terms["stat_group1_keys"] = group1_stats
+
+    group2_stats = split_items(第二組能力清單)
+    if group2_stats: current_terms["stat_group2_keys"] = group2_stats
+
+    # 3. 寫入資料庫
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO system_settings (guild_id, key, value) VALUES (?, 'custom_ui_terms', ?)
             ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
         """, (g_id, json.dumps(current_terms, ensure_ascii=False), json.dumps(current_terms, ensure_ascii=False)))
 
+        # 若有自訂可選組織，自動同步註冊進 factions（陣營表）
+        if org_list:
+            for org in org_list:
+                await db.execute("""
+                    INSERT INTO factions (guild_id, name, desc) VALUES (?, ?, '世界觀官方勢力')
+                    ON CONFLICT(guild_id, name) DO NOTHING
+                """, (g_id, org))
+
+        # 資歷階級 JSON 解析
         if 自訂資歷階級:
             try:
                 parsed_tiers = json.loads(自訂資歷階級.strip())
@@ -1255,20 +1291,26 @@ async def custom_world_terms_cmd(
                     ON CONFLICT(guild_id, key) DO UPDATE SET value = ?
                 """, (g_id, json.dumps(parsed_tiers, ensure_ascii=False), json.dumps(parsed_tiers, ensure_ascii=False)))
             except Exception as e:
-                await interaction.response.send_message(f"⚠️ 面板名詞更新成功，但資歷 JSON 格式有誤：`{e}`", ephemeral=True)
+                await interaction.response.send_message(f"⚠️ 詞彙設定已保存，但資歷階級 JSON 格式有誤：`{e}`", ephemeral=True)
                 return
 
         await db.commit()
 
-    embed = discord.Embed(title="🌐 世界觀與面板用詞自訂已套用", color=0x2ECC71)
+    # 4. 漂亮的反饋面板
+    embed = discord.Embed(title="🌐 世界觀體系與能力清單自訂已套用", color=0x2ECC71)
     embed.description = (
-        f"• 面板第一頁：`{current_terms['page1_title']}`\n"
-        f"• 能力第二頁：`{current_terms['page2_title']}`\n"
-        f"• 核心賽道／功法：`{current_terms['term_track']}`\n"
-        f"• 勢力組織稱謂：`{current_terms['term_org']}`\n"
-        f"• 資歷時長稱謂：`{current_terms['term_debut']}`\n"
-        f"• 第一組能力名稱：`{current_terms['section_stat_group1']}`\n"
-        f"• 第二組能力名稱：`{current_terms['section_stat_group2']}`"
+        f"**📋 基本標題**\n"
+        f"• 第一頁：`{current_terms['page1_title']}`\n"
+        f"• 第二頁：`{current_terms['page2_title']}`\n"
+        f"• 資歷稱號：`{current_terms['term_debut']}`\n\n"
+        f"**⚔️ 核心傳承／賽道【{current_terms['term_track']}】**\n"
+        f"• 包含項目：`{'、'.join(current_terms.get('track_list', ['唱跳', '演繹', '主持', '歌唱', '綜藝']))}`\n\n"
+        f"**🏰 勢力陣營／組織【{current_terms['term_org']}】**\n"
+        f"• 包含名冊：`{'、'.join(current_terms.get('org_list', ['官方勢力', '獨立個人']))}`\n\n"
+        f"**📈 第一能力組【{current_terms['section_stat_group1']}】**\n"
+        f"• 屬性項目：`{'、'.join(current_terms.get('stat_group1_keys', ['流量熱度', '商業價值', '影響指數', '路人緣', '公關']))}`\n\n"
+        f"**🎭 第二能力組【{current_terms['section_stat_group2']}】**\n"
+        f"• 屬性項目：`{'、'.join(current_terms.get('stat_group2_keys', ['容貌', '才智', '個人才藝']))}`"
     )
     await interaction.response.send_message(embed=embed)
 
